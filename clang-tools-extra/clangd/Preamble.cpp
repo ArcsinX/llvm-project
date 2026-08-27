@@ -90,12 +90,10 @@ class CppFilePreambleCallbacks : public PreambleCallbacks {
 public:
   CppFilePreambleCallbacks(
       PathRef File, PreambleBuildStats *Stats, bool ParseForwardingFunctions,
-      std::function<void(CompilerInstance &)> BeforeIncludesCallback,
-      std::function<void(CompilerInstance &)> BeforeExecuteCallback)
+      std::function<void(CompilerInstance &)> BeforePreambleCallback)
       : File(File), Stats(Stats),
         ParseForwardingFunctions(ParseForwardingFunctions),
-        BeforeIncludesCallback(std::move(BeforeIncludesCallback)),
-        BeforeExecuteCallback(std::move(BeforeExecuteCallback)) {}
+        BeforePreambleCallback(std::move(BeforePreambleCallback)) {}
 
   IncludeStructure takeIncludes() { return std::move(Includes); }
 
@@ -159,12 +157,10 @@ public:
     LangOpts = &CI.getLangOpts();
     SourceMgr = &CI.getSourceManager();
     PP = &CI.getPreprocessor();
-    if (BeforeIncludesCallback)
-      BeforeIncludesCallback(CI);
+    if (BeforePreambleCallback)
+      BeforePreambleCallback(CI);
     Includes.collect(CI);
     Pragmas.record(CI);
-    if (BeforeExecuteCallback)
-      BeforeExecuteCallback(CI);
   }
 
   std::unique_ptr<PPCallbacks> createPPCallbacks() override {
@@ -213,8 +209,7 @@ private:
   const Preprocessor *PP = nullptr;
   PreambleBuildStats *Stats;
   bool ParseForwardingFunctions;
-  std::function<void(CompilerInstance &)> BeforeIncludesCallback;
-  std::function<void(CompilerInstance &)> BeforeExecuteCallback;
+  std::function<void(CompilerInstance &)> BeforePreambleCallback;
   std::optional<CapturedASTCtx> CapturedCtx;
 };
 
@@ -641,11 +636,7 @@ buildPreamble(PathRef FileName, CompilerInvocation CI,
       FileName, Stats, Inputs.Opts.PreambleParseForwardingFunctions,
       [&ASTListeners](CompilerInstance &CI) {
         for (const auto &L : ASTListeners)
-          L->beforeIncludes(CI);
-      },
-      [&ASTListeners](CompilerInstance &CI) {
-        for (const auto &L : ASTListeners)
-          L->beforeExecute(CI);
+          L->beforePreamble(CI);
       });
   llvm::SmallString<32> AbsFileName(FileName);
   VFS->makeAbsolute(AbsFileName);

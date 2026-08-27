@@ -89,6 +89,9 @@ TEST(FeatureModulesTest, SuppressDiags) {
 TEST(FeatureModulesTest, BeforeExecute) {
   struct BeforeExecuteModule final : public FeatureModule {
     struct Listener : public FeatureModule::ASTListener {
+      void beforePreamble(CompilerInstance &CI) override {
+        CI.getPreprocessor().SetSuppressIncludeNotFoundError(true);
+      }
       void beforeExecute(CompilerInstance &CI) override {
         CI.getPreprocessor().SetSuppressIncludeNotFoundError(true);
       }

@@ -109,14 +109,18 @@ public:
     /// Listeners are destroyed once the AST is built.
     virtual ~ASTListener() = default;
 
-    /// Called before IncludeStructure::collect() during preamble and main file
-    /// builds. Modules that need to register PP callbacks (e.g. tidy checks)
-    /// should use this hook. Only the Preprocessor is available.
+    /// Called before IncludeStructure::collect() during preamble build only.
+    /// Modules that need to register PP callbacks before include collection
+    /// in the preamble should use this hook.
+    virtual void beforePreamble(CompilerInstance &CI) {}
+
+    /// Called before IncludeStructure::collect() during main file build only.
+    /// Modules that need to register PP callbacks before include collection
+    /// in the main file should use this hook.
     virtual void beforeIncludes(CompilerInstance &CI) {}
 
-    /// Called before every AST build, both for main file and preamble. The call
-    /// happens immediately before FrontendAction::Execute(), with Preprocessor
-    /// set up already and after BeginSourceFile() on main file was called.
+    /// Called before every main file AST build, after IncludeStructure::collect()
+    /// and before FrontendAction::Execute().
     virtual void beforeExecute(CompilerInstance &CI) {}
 
     /// Called after FrontendAction::Execute() and after the preprocessor has
