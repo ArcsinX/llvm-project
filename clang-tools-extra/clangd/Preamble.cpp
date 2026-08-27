@@ -90,9 +90,11 @@ class CppFilePreambleCallbacks : public PreambleCallbacks {
 public:
   CppFilePreambleCallbacks(
       PathRef File, PreambleBuildStats *Stats, bool ParseForwardingFunctions,
+      std::function<void(CompilerInstance &)> BeforeIncludesCallback,
       std::function<void(CompilerInstance &)> BeforeExecuteCallback)
       : File(File), Stats(Stats),
         ParseForwardingFunctions(ParseForwardingFunctions),
+        BeforeIncludesCallback(std::move(BeforeIncludesCallback)),
         BeforeExecuteCallback(std::move(BeforeExecuteCallback)) {}
 
   IncludeStructure takeIncludes() { return std::move(Includes); }
@@ -122,6 +124,11 @@ public:
     CI.getASTContext().setASTMutationListener(nullptr);
     CapturedCtx.emplace(CI);
 
+    // Run AST matchers on the preamble AST is NOT needed for two-phase checks
+    // like modernize-deprecated-headers because the preamble includes are
+    // replayed during the main file build, where both Phase 1 (PPCallbacks)
+    // and Phase 2 (matchAST) run. Running matchAST here would cause duplicate
+    // diagnostics.
     const SourceManager &SM = CI.getSourceManager();
     OptionalFileEntryRef MainFE = SM.getFileEntryRefForID(SM.getMainFileID());
     IsMainFileIncludeGuarded =
@@ -152,6 +159,8 @@ public:
     LangOpts = &CI.getLangOpts();
     SourceMgr = &CI.getSourceManager();
     PP = &CI.getPreprocessor();
+    if (BeforeIncludesCallback)
+      BeforeIncludesCallback(CI);
     Includes.collect(CI);
     Pragmas.record(CI);
     if (BeforeExecuteCallback)
@@ -204,6 +213,7 @@ private:
   const Preprocessor *PP = nullptr;
   PreambleBuildStats *Stats;
   bool ParseForwardingFunctions;
+  std::function<void(CompilerInstance &)> BeforeIncludesCallback;
   std::function<void(CompilerInstance &)> BeforeExecuteCallback;
   std::optional<CapturedASTCtx> CapturedCtx;
 };
@@ -596,6 +606,11 @@ buildPreamble(PathRef FileName, CompilerInvocation CI,
         for (const auto &L : ASTListeners)
           L->sawDiagnostic(D, Diag);
       });
+  PreambleDiagnostics.setDiagFinalizer(
+      [&ASTListeners](clangd::Diag &Diag) {
+        for (const auto &L : ASTListeners)
+          L->finalizeDiag(Diag);
+      });
   auto VFS = Inputs.TFS->view(Inputs.CompileCommand.Directory);
   llvm::IntrusiveRefCntPtr<DiagnosticsEngine> PreambleDiagsEngine =
       CompilerInstance::createDiagnostics(*VFS, CI.getDiagnosticOpts(),
@@ -624,6 +639,10 @@ buildPreamble(PathRef FileName, CompilerInvocation CI,
 
   CppFilePreambleCallbacks CapturedInfo(
       FileName, Stats, Inputs.Opts.PreambleParseForwardingFunctions,
+      [&ASTListeners](CompilerInstance &CI) {
+        for (const auto &L : ASTListeners)
+          L->beforeIncludes(CI);
+      },
       [&ASTListeners](CompilerInstance &CI) {
         for (const auto &L : ASTListeners)
           L->beforeExecute(CI);

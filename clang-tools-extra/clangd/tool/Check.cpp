@@ -27,6 +27,7 @@
 #include "../clang-tidy/ClangTidyModule.h"
 #include "../clang-tidy/ClangTidyOptions.h"
 #include "../clang-tidy/GlobList.h"
+#include "ClangTidyFeatureModule.h"
 #include "ClangdLSPServer.h"
 #include "ClangdServer.h"
 #include "CodeComplete.h"
@@ -46,7 +47,6 @@
 #include "Selection.h"
 #include "SemanticHighlighting.h"
 #include "SourceCode.h"
-#include "TidyProvider.h"
 #include "XRefs.h"
 #include "clang-include-cleaner/Record.h"
 #include "index/FileIndex.h"
@@ -205,7 +205,7 @@ public:
     std::vector<std::string> CC1Args;
     Inputs.CompileCommand = Cmd;
     Inputs.TFS = &TFS;
-    Inputs.ClangTidyProvider = Opts.ClangTidyProvider;
+    Inputs.FeatureModules = Opts.FeatureModules;
     Inputs.Opts.PreambleParseForwardingFunctions =
         Opts.PreambleParseForwardingFunctions;
     if (Contents) {
@@ -318,17 +318,21 @@ public:
     };
     // Build ParsedAST with a fixed check glob, and return the time taken.
     auto Build = [&](llvm::StringRef Checks) -> Duration {
-      TidyProvider CTProvider = [&](tidy::ClangTidyOptions &Opts,
-                                    llvm::StringRef) {
-        Opts.Checks = Checks.str();
-      };
-      Inputs.ClangTidyProvider = CTProvider;
+      auto *TidyMod =
+  Inputs.FeatureModules->get<ClangTidyFeatureModule>();
+  assert(TidyMod && "ClangTidyFeatureModule should be registered");
+      auto OrigProvider = TidyMod->provider();
+      TidyMod->setProvider(
+          [&Checks](tidy::ClangTidyOptions &Opts, llvm::StringRef) {
+            Opts.Checks = Checks.str();
+          });
       // Sigh, can't reuse the CompilerInvocation.
       IgnoringDiagConsumer IgnoreDiags;
       auto Invocation = buildCompilerInvocation(Inputs, IgnoreDiags);
       Duration Val = Time([&] {
         ParsedAST::build(File, Inputs, std::move(Invocation), {}, Preamble);
       });
+      TidyMod->setProvider(OrigProvider);
       vlog("    Measured {0} ==> {1}", Checks, Val);
       return Val;
     };
@@ -367,9 +371,6 @@ public:
       log("  {0} = {1:P0}", Check, Fraction);
     }
     log("Finished individual clang-tidy checks");
-
-    // Restore old options.
-    Inputs.ClangTidyProvider = Opts.ClangTidyProvider;
   }
 
   // Build Inlay Hints for the entire AST or the specified range

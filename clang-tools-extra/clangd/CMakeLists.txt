@@ -111,7 +111,6 @@ add_clang_library(clangDaemon STATIC
   SourceCode.cpp
   SymbolDocumentation.cpp
   SystemIncludeExtractor.cpp
-  TidyProvider.cpp
   TUScheduler.cpp
   URI.cpp
   XRefs.cpp
@@ -191,11 +190,13 @@ target_link_libraries(clangDaemon
   clangTidyUtils
 
   clangdSupport
+  clangdFeatureModules
   )
 if(CLANGD_TIDY_CHECKS)
   target_link_libraries(clangDaemon PRIVATE ${ALL_CLANG_TIDY_CHECKS})
 endif()
 
+add_subdirectory(feature-modules)
 add_subdirectory(refactor/tweaks)
 if ("${CMAKE_SYSTEM_NAME}" STREQUAL "Linux")
   # FIXME: Make fuzzer not use linux-specific APIs, build it everywhere.

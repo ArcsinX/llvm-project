@@ -7,6 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "Annotations.h"
+#include "../ClangTidyFeatureModule.h"
 #include "ClangdLSPServer.h"
 #include "ClangdServer.h"
 #include "ConfigProvider.h"
@@ -208,13 +209,16 @@ TEST_F(LSPTest, ClangTidyRename) {
   Annotations Source(R"cpp(
     void [[foo]]() {}
   )cpp");
-  constexpr auto ClangTidyProvider = [](tidy::ClangTidyOptions &ClangTidyOpts,
-                                        llvm::StringRef) {
-    ClangTidyOpts.Checks = {"-*,readability-identifier-naming"};
-    ClangTidyOpts.CheckOptions["readability-identifier-naming.FunctionCase"] =
-        "CamelCase";
-  };
-  Opts.ClangTidyProvider = ClangTidyProvider;
+  {
+    auto TidyMod = std::make_unique<ClangTidyFeatureModule>();
+    TidyMod->setProvider(
+        [](tidy::ClangTidyOptions &Opts, llvm::StringRef) {
+          Opts.Checks = {"-*,readability-identifier-naming"};
+          Opts.CheckOptions["readability-identifier-naming.FunctionCase"] =
+              "CamelCase";
+        });
+    FeatureModules.add(std::move(TidyMod));
+  }
   auto &Client = start();
   Client.didOpen("foo.hpp", Header.code());
   Client.didOpen("foo.cpp", Source.code());
@@ -268,11 +272,14 @@ TEST_F(LSPTest, ClangTidyCrash_Issue109367) {
   // This test requires clang-tidy checks to be linked in.
   if (!CLANGD_TIDY_CHECKS)
     return;
-  constexpr auto ClangTidyProvider = [](tidy::ClangTidyOptions &ClangTidyOpts,
-                                        llvm::StringRef) {
-    ClangTidyOpts.Checks = {"-*,boost-use-ranges"};
-  };
-  Opts.ClangTidyProvider = ClangTidyProvider;
+  {
+    auto TidyMod = std::make_unique<ClangTidyFeatureModule>();
+    TidyMod->setProvider(
+        [](tidy::ClangTidyOptions &Opts, llvm::StringRef) {
+          Opts.Checks = {"-*,boost-use-ranges"};
+        });
+    FeatureModules.add(std::move(TidyMod));
+  }
   // Check that registering the boost-use-ranges checker's matchers
   // on two different threads does not cause a crash.
   auto &Client = start();

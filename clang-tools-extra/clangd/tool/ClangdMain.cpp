@@ -17,7 +17,7 @@
 #include "IncludeCleaner.h"
 #include "PathMapping.h"
 #include "Protocol.h"
-#include "TidyProvider.h"
+#include "feature-modules/FeatureModulesForceLinker.h"
 #include "Transport.h"
 #include "index/Background.h"
 #include "index/Index.h"
@@ -1018,20 +1018,6 @@ clangd accepts flags on the commandline, and in the CLANGD_FLAGS environment var
   Config = config::Provider::combine(std::move(ProviderPointers));
   Opts.ConfigProvider = Config.get();
 
-  // Create an empty clang-tidy option.
-  TidyProvider ClangTidyOptProvider;
-  if (EnableClangTidy) {
-    std::vector<TidyProvider> Providers;
-    Providers.reserve(4 + EnableConfig);
-    Providers.push_back(provideEnvironment());
-    Providers.push_back(provideClangTidyFiles(TFS));
-    if (EnableConfig)
-      Providers.push_back(provideClangdConfig());
-    Providers.push_back(provideDefaultChecks());
-    Providers.push_back(disableUnusableChecks());
-    ClangTidyOptProvider = combine(std::move(Providers));
-    Opts.ClangTidyProvider = ClangTidyOptProvider;
-  }
   Opts.UseDirtyHeaders = UseDirtyHeaders;
   Opts.PreambleParseForwardingFunctions = PreambleParseForwardingFunctions;
   Opts.SkipPreambleBuild = SkipPreambleBuild;
@@ -1060,7 +1046,13 @@ clangd accepts flags on the commandline, and in the CLANGD_FLAGS environment var
                : static_cast<int>(ErrorResultCode::CheckFailed);
   }
 
-  FeatureModuleSet ModuleSet = FeatureModuleSet::fromRegistry();
+  FeatureModuleSet ModuleSet;
+  for (FeatureModuleRegistry::entry E : FeatureModuleRegistry::entries()) {
+    if (!EnableClangTidy && E.getName() == "clang-tidy")
+      continue;
+    vlog("Adding feature module '{0}' ({1})", E.getName(), E.getDesc());
+    ModuleSet.add(E.instantiate());
+  }
   if (ModuleSet.begin() != ModuleSet.end())
     Opts.FeatureModules = &ModuleSet;
 

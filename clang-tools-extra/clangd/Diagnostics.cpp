@@ -7,7 +7,6 @@
 //===----------------------------------------------------------------------===//
 
 #include "Diagnostics.h"
-#include "../clang-tidy/ClangTidyDiagnosticConsumer.h"
 #include "Compiler.h"
 #include "Config.h"
 #include "Protocol.h"
@@ -389,12 +388,6 @@ void setTags(clangd::Diag &D) {
   } else if (UnusedDiags->contains(D.ID)) {
     D.Tags.push_back(DiagnosticTag::Unnecessary);
   }
-  if (D.Source == Diag::ClangTidy) {
-    if (llvm::StringRef(D.Name).starts_with("misc-unused-"))
-      D.Tags.push_back(DiagnosticTag::Unnecessary);
-    if (llvm::StringRef(D.Name).starts_with("modernize-"))
-      D.Tags.push_back(DiagnosticTag::Deprecated);
-  }
 }
 } // namespace
 
@@ -571,7 +564,7 @@ int getSeverity(DiagnosticsEngine::Level L) {
   llvm_unreachable("Unknown diagnostic level!");
 }
 
-std::vector<Diag> StoreDiags::take(const clang::tidy::ClangTidyContext *Tidy) {
+std::vector<Diag> StoreDiags::take() {
   // Do not forget to emit a pending diagnostic if there is one.
   flushLastDiag();
 
@@ -600,28 +593,13 @@ std::vector<Diag> StoreDiags::take(const clang::tidy::ClangTidyContext *Tidy) {
         Diag.Name = std::string(Name);
       }
       Diag.Source = Diag::Clang;
-    } else if (Tidy != nullptr) {
-      std::string TidyDiag = Tidy->getCheckName(Diag.ID);
-      if (!TidyDiag.empty()) {
-        Diag.Name = std::move(TidyDiag);
-        Diag.Source = Diag::ClangTidy;
-        // clang-tidy bakes the name into diagnostic messages. Strip it out.
-        // It would be much nicer to make clang-tidy not do this.
-        auto CleanMessage = [&](std::string &Msg) {
-          StringRef Rest(Msg);
-          if (Rest.consume_back("]") && Rest.consume_back(Diag.Name) &&
-              Rest.consume_back(" ["))
-            Msg.resize(Rest.size());
-        };
-        CleanMessage(Diag.Message);
-        for (auto &Note : Diag.Notes)
-          CleanMessage(Note.Message);
-        for (auto &Fix : Diag.Fixes)
-          CleanMessage(Fix.Message);
-      }
     }
     setTags(Diag);
   }
+  // Let feature modules finalize diagnostics after notes/fixes are assembled.
+  if (Finalizer)
+    for (auto &Diag : Output)
+      Finalizer(Diag);
   // Deduplicate clang-tidy diagnostics -- some clang-tidy checks may emit
   // duplicated messages due to various reasons (e.g. the check doesn't handle
   // template instantiations well; clang-tidy alias checks).

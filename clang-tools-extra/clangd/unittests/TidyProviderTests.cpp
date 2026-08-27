@@ -8,7 +8,7 @@
 
 #include "Feature.h"
 #include "TestFS.h"
-#include "TidyProvider.h"
+#include "../ClangTidyFeatureModule.h"
 #include "llvm/Testing/Support/SupportHelpers.h"
 #include "gtest/gtest.h"
 

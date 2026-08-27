@@ -28,9 +28,6 @@
 #include <vector>
 
 namespace clang {
-namespace tidy {
-class ClangTidyContext;
-} // namespace tidy
 namespace clangd {
 
 struct ClangdDiagnosticOptions {
@@ -137,8 +134,7 @@ std::optional<std::string> getDiagnosticDocURI(Diag::DiagSource, unsigned ID,
 /// the diag itself nor its notes are in the main file).
 class StoreDiags : public DiagnosticConsumer {
 public:
-  // The ClangTidyContext populates Source and Name for clang-tidy diagnostics.
-  std::vector<Diag> take(const clang::tidy::ClangTidyContext *Tidy = nullptr);
+  std::vector<Diag> take();
 
   void BeginSourceFile(const LangOptions &Opts,
                        const Preprocessor *PP) override;
@@ -163,6 +159,10 @@ public:
   /// Invokes a callback every time a diagnostics is completely formed. Handler
   /// of the callback can also mutate the diagnostic.
   void setDiagCallback(DiagCallback CB) { DiagCB = std::move(CB); }
+  /// Invokes a callback on each diagnostic after it is fully assembled
+  /// (notes, fixes, name all set) and before it is returned from take().
+  using DiagFinalizer = std::function<void(Diag &)>;
+  void setDiagFinalizer(DiagFinalizer F) { Finalizer = std::move(F); }
 
 private:
   void flushLastDiag();
@@ -170,6 +170,7 @@ private:
   DiagFixer Fixer = nullptr;
   LevelAdjuster Adjuster = nullptr;
   DiagCallback DiagCB = nullptr;
+  DiagFinalizer Finalizer = nullptr;
   std::vector<Diag> Output;
   std::optional<LangOptions> LangOpts;
   std::optional<Diag> LastDiag;

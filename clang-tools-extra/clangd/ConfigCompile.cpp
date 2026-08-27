@@ -29,7 +29,7 @@
 #include "ConfigProvider.h"
 #include "Diagnostics.h"
 #include "Feature.h"
-#include "TidyProvider.h"
+#include "TidyCheckInfo.h"
 #include "support/Logger.h"
 #include "support/Path.h"
 #include "support/Trace.h"

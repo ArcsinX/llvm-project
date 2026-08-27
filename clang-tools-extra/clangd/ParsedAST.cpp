@@ -7,10 +7,6 @@
 //===----------------------------------------------------------------------===//
 
 #include "ParsedAST.h"
-#include "../clang-tidy/ClangTidyCheck.h"
-#include "../clang-tidy/ClangTidyDiagnosticConsumer.h"
-#include "../clang-tidy/ClangTidyModule.h"
-#include "../clang-tidy/ClangTidyOptions.h"
 #include "AST.h"
 #include "CollectMacros.h"
 #include "Compiler.h"
@@ -23,7 +19,6 @@
 #include "IncludeFixer.h"
 #include "Preamble.h"
 #include "SourceCode.h"
-#include "TidyProvider.h"
 #include "clang-include-cleaner/Record.h"
 #include "index/Symbol.h"
 #include "support/Logger.h"
@@ -78,10 +73,7 @@
 
 // Force the linker to link in Clang-tidy modules.
 // clangd doesn't support the static analyzer.
-#if CLANGD_TIDY_CHECKS
-#define CLANG_TIDY_DISABLE_STATIC_ANALYZER_CHECKS
-#include "../clang-tidy/ClangTidyForceLinker.h"
-#endif
+  // This is now handled by ClangTidyFeatureModule.
 
 namespace clang {
 namespace clangd {
@@ -408,20 +400,6 @@ std::vector<Diag> getIncludeCleanerDiags(ParsedAST &AST, llvm::StringRef Code,
       Cfg.Style.AngledHeaders, Cfg.Style.QuotedHeaders);
 }
 
-tidy::ClangTidyCheckFactories
-filterFastTidyChecks(const tidy::ClangTidyCheckFactories &All,
-                     Config::FastCheckPolicy Policy) {
-  if (Policy == Config::FastCheckPolicy::None)
-    return All;
-  bool AllowUnknown = Policy == Config::FastCheckPolicy::Loose;
-  tidy::ClangTidyCheckFactories Fast;
-  for (const auto &Factory : All) {
-    if (isFastTidyCheck(Factory.getKey()).value_or(AllowUnknown))
-      Fast.registerCheckFactory(Factory.first(), Factory.second);
-  }
-  return Fast;
-}
-
 } // namespace
 
 std::optional<ParsedAST>
@@ -470,6 +448,11 @@ ParsedAST::build(llvm::StringRef Filename, const ParseInputs &Inputs,
         for (const auto &L : ASTListeners)
           L->sawDiagnostic(D, Diag);
       });
+  ASTDiags.setDiagFinalizer(
+      [&ASTListeners](clangd::Diag &Diag) {
+        for (const auto &L : ASTListeners)
+          L->finalizeDiag(Diag);
+      });
 
   // Adjust header search options to load the built module files recorded
   // in RequiredModules.
@@ -500,40 +483,6 @@ ParsedAST::build(llvm::StringRef Filename, const ParseInputs &Inputs,
                         : "unknown error");
     return std::nullopt;
   }
-  tidy::ClangTidyOptions ClangTidyOpts;
-  {
-    trace::Span Tracer("ClangTidyOpts");
-    ClangTidyOpts = getTidyOptionsForFile(Inputs.ClangTidyProvider, Filename);
-    dlog("ClangTidy configuration for file {0}: {1}", Filename,
-         tidy::configurationAsText(ClangTidyOpts));
-
-    // If clang-tidy is configured to emit clang warnings, we should too.
-    //
-    // Such clang-tidy configuration consists of two parts:
-    //   - ExtraArgs: ["-Wfoo"] causes clang to produce the warnings
-    //   - Checks: "clang-diagnostic-foo" prevents clang-tidy filtering them out
-    //
-    // In clang-tidy, diagnostics are emitted if they pass both checks.
-    // When groups contain subgroups, -Wparent includes the child, but
-    // clang-diagnostic-parent does not.
-    //
-    // We *don't* want to change the compile command directly. This can have
-    // too many unexpected effects: breaking the command, interactions with
-    // -- and -Werror, etc. Besides, we've already parsed the command.
-    // Instead we parse the -W<group> flags and handle them directly.
-    //
-    // Similarly, we don't want to use Checks to filter clang diagnostics after
-    // they are generated, as this spreads clang-tidy emulation everywhere.
-    // Instead, we just use these to filter which extra diagnostics we enable.
-    auto &Diags = Clang->getDiagnostics();
-    TidyDiagnosticGroups TidyGroups(ClangTidyOpts.Checks ? *ClangTidyOpts.Checks
-                                                         : llvm::StringRef());
-    if (ClangTidyOpts.ExtraArgsBefore)
-      applyWarningOptions(*ClangTidyOpts.ExtraArgsBefore, TidyGroups, Diags);
-    if (ClangTidyOpts.ExtraArgs)
-      applyWarningOptions(*ClangTidyOpts.ExtraArgs, TidyGroups, Diags);
-  }
-
   auto Action = std::make_unique<ClangdFrontendAction>();
   const FrontendInputFile &MainInput = Clang->getFrontendOpts().Inputs[0];
   if (!Action->BeginSourceFile(*Clang, MainInput)) {
@@ -552,136 +501,66 @@ ParsedAST::build(llvm::StringRef Filename, const ParseInputs &Inputs,
     Clang->getPreprocessor().getHeaderSearchInfo().MarkFileIncludeOnce(*MainFE);
   }
 
-  // Set up ClangTidy. Must happen after BeginSourceFile() so ASTContext exists.
-  // Clang-tidy has some limitations to ensure reasonable performance:
-  //  - checks don't see all preprocessor events in the preamble
-  //  - matchers run only over the main-file top-level decls (and can't see
-  //    ancestors outside this scope).
-  // In practice almost all checks work well without modifications.
-  std::vector<std::unique_ptr<tidy::ClangTidyCheck>> CTChecks;
-  ast_matchers::MatchFinder CTFinder;
-  std::optional<tidy::ClangTidyContext> CTContext;
   // Must outlive FixIncludes.
   auto BuildDir = VFS->getCurrentWorkingDirectory();
   std::optional<IncludeFixer> FixIncludes;
+  // Clang only corrects typos for use of undeclared functions in C if that
+  // use is an error. Include fixer relies on typo correction, so pretend
+  // this is an error. (The actual typo correction is nice too).
+  // We restore the original severity in the level adjuster.
+  // FIXME: It would be better to have a real API for this, but what?
   llvm::DenseMap<diag::kind, DiagnosticsEngine::Level> OverriddenSeverity;
-  // No need to run clang-tidy or IncludeFixerif we are not going to surface
-  // diagnostics.
-  {
-    trace::Span Tracer("ClangTidyInit");
-    static const auto *AllCTFactories = [] {
-      auto *CTFactories = new tidy::ClangTidyCheckFactories;
-      for (const auto &E : tidy::ClangTidyModuleRegistry::entries())
-        E.instantiate()->addCheckFactories(*CTFactories);
-      return CTFactories;
-    }();
-    tidy::ClangTidyCheckFactories FastFactories = filterFastTidyChecks(
-        *AllCTFactories, Cfg.Diagnostics.ClangTidy.FastCheckFilter);
-    CTContext.emplace(std::make_unique<tidy::DefaultOptionsProvider>(
-        tidy::ClangTidyGlobalOptions(), ClangTidyOpts));
-    // The lifetime of DiagnosticOptions is managed by \c Clang.
-    CTContext->setDiagnosticsEngine(nullptr, &Clang->getDiagnostics());
-    CTContext->setASTContext(&Clang->getASTContext());
-    CTContext->setCurrentFile(Filename);
-    CTContext->setSelfContainedDiags(true);
-    CTChecks = FastFactories.createChecksForLanguage(&*CTContext);
-    Preprocessor *PP = &Clang->getPreprocessor();
-    for (const auto &Check : CTChecks) {
-      Check->registerPPCallbacks(Clang->getSourceManager(), PP, PP);
-      Check->registerMatchers(&CTFinder);
-    }
-
-    // Clang only corrects typos for use of undeclared functions in C if that
-    // use is an error. Include fixer relies on typo correction, so pretend
-    // this is an error. (The actual typo correction is nice too).
-    // We restore the original severity in the level adjuster.
-    // FIXME: It would be better to have a real API for this, but what?
-    for (auto ID : {diag::ext_implicit_function_decl_c99,
-                    diag::ext_implicit_lib_function_decl,
-                    diag::ext_implicit_lib_function_decl_c99,
-                    diag::warn_implicit_function_decl}) {
-      OverriddenSeverity.try_emplace(
-          ID, Clang->getDiagnostics().getDiagnosticLevel(ID, SourceLocation()));
-      Clang->getDiagnostics().setSeverity(ID, diag::Severity::Error,
-                                          SourceLocation());
-    }
-
-    ASTDiags.setLevelAdjuster([&](DiagnosticsEngine::Level DiagLevel,
-                                  const clang::Diagnostic &Info) {
-      auto It = OverriddenSeverity.find(Info.getID());
-      if (It != OverriddenSeverity.end())
-        DiagLevel = It->second;
-
-      if (!CTChecks.empty()) {
-        std::string CheckName = CTContext->getCheckName(Info.getID());
-        bool IsClangTidyDiag = !CheckName.empty();
-        if (IsClangTidyDiag) {
-          if (Cfg.Diagnostics.Suppress.contains(CheckName))
-            return DiagnosticsEngine::Ignored;
-          // Check for suppression comment. Skip the check for diagnostics not
-          // in the main file, because we don't want that function to query the
-          // source buffer for preamble files. For the same reason, we ask
-          // shouldSuppressDiagnostic to avoid I/O.
-          // We let suppression comments take precedence over warning-as-error
-          // to match clang-tidy's behaviour.
-          bool IsInsideMainFile =
-              Info.hasSourceManager() &&
-              isInsideMainFile(Info.getLocation(), Info.getSourceManager());
-          SmallVector<tooling::Diagnostic, 1> TidySuppressedErrors;
-          if (IsInsideMainFile && CTContext->shouldSuppressDiagnostic(
-                                      DiagLevel, Info, TidySuppressedErrors,
-                                      /*AllowIO=*/false,
-                                      /*EnableNolintBlocks=*/true)) {
-            // FIXME: should we expose the suppression error (invalid use of
-            // NOLINT comments)?
-            return DiagnosticsEngine::Ignored;
-          }
-          if (!CTContext->getOptions().SystemHeaders.value_or(false) &&
-              Info.hasSourceManager() &&
-              Info.getSourceManager().isInSystemMacro(Info.getLocation()))
-            return DiagnosticsEngine::Ignored;
-
-          // Check for warning-as-error.
-          if (DiagLevel == DiagnosticsEngine::Warning &&
-              CTContext->treatAsError(CheckName)) {
-            return DiagnosticsEngine::Error;
-          }
-        }
-      }
-      return DiagLevel;
-    });
-
-    // Add IncludeFixer which can recover diagnostics caused by missing includes
-    // (e.g. incomplete type) and attach include insertion fixes to diagnostics.
-    if (Inputs.Index && !BuildDir.getError()) {
-      auto Style =
-          getFormatStyleForFile(Filename, Inputs.Contents, *Inputs.TFS, false);
-      auto Inserter = std::make_shared<IncludeInserter>(
-          Filename, Inputs.Contents, Style, BuildDir.get(),
-          &Clang->getPreprocessor().getHeaderSearchInfo(),
-          Cfg.Style.QuotedHeaders, Cfg.Style.AngledHeaders);
-      ArrayRef<Inclusion> MainFileIncludes;
-      if (Preamble) {
-        MainFileIncludes = Preamble->Includes.MainFileIncludes;
-        for (const auto &Inc : Preamble->Includes.MainFileIncludes)
-          Inserter->addExisting(Inc);
-      }
-      // FIXME: Consider piping through ASTSignals to fetch this to handle the
-      // case where a header file contains ObjC decls but no #imports.
-      Symbol::IncludeDirective Directive =
-          Inputs.Opts.ImportInsertions
-              ? preferredIncludeDirective(Filename, Clang->getLangOpts(),
-                                          MainFileIncludes, {})
-              : Symbol::Include;
-      FixIncludes.emplace(Filename, Inserter, *Inputs.Index,
-                          /*IndexRequestLimit=*/5, Directive);
-      ASTDiags.contributeFixes([&FixIncludes](DiagnosticsEngine::Level DiagLevl,
-                                              const clang::Diagnostic &Info) {
-        return FixIncludes->fix(DiagLevl, Info);
-      });
-      Clang->setExternalSemaSource(FixIncludes->unresolvedNameRecorder());
-    }
+  for (auto ID : {diag::ext_implicit_function_decl_c99,
+                  diag::ext_implicit_lib_function_decl,
+                  diag::ext_implicit_lib_function_decl_c99,
+                  diag::warn_implicit_function_decl}) {
+    OverriddenSeverity.try_emplace(
+        ID, Clang->getDiagnostics().getDiagnosticLevel(ID, SourceLocation()));
+    Clang->getDiagnostics().setSeverity(ID, diag::Severity::Error,
+                                        SourceLocation());
   }
+  ASTDiags.setLevelAdjuster([&](DiagnosticsEngine::Level DiagLevel,
+                                const clang::Diagnostic &Info) {
+    auto It = OverriddenSeverity.find(Info.getID());
+    if (It != OverriddenSeverity.end())
+      DiagLevel = It->second;
+    return DiagLevel;
+  });
+
+  // Add IncludeFixer which can recover diagnostics caused by missing includes
+  // (e.g. incomplete type) and attach include insertion fixes to diagnostics.
+  if (Inputs.Index && !BuildDir.getError()) {
+    auto Style =
+        getFormatStyleForFile(Filename, Inputs.Contents, *Inputs.TFS, false);
+    auto Inserter = std::make_shared<IncludeInserter>(
+        Filename, Inputs.Contents, Style, BuildDir.get(),
+        &Clang->getPreprocessor().getHeaderSearchInfo(),
+        Cfg.Style.QuotedHeaders, Cfg.Style.AngledHeaders);
+    ArrayRef<Inclusion> MainFileIncludes;
+    if (Preamble) {
+      MainFileIncludes = Preamble->Includes.MainFileIncludes;
+      for (const auto &Inc : Preamble->Includes.MainFileIncludes)
+        Inserter->addExisting(Inc);
+    }
+    // FIXME: Consider piping through ASTSignals to fetch this to handle the
+    // case where a header file contains ObjC decls but no #imports.
+    Symbol::IncludeDirective Directive =
+        Inputs.Opts.ImportInsertions
+            ? preferredIncludeDirective(Filename, Clang->getLangOpts(),
+                                        MainFileIncludes, {})
+            : Symbol::Include;
+    FixIncludes.emplace(Filename, Inserter, *Inputs.Index,
+                        /*IndexRequestLimit=*/5, Directive);
+    ASTDiags.contributeFixes([&FixIncludes](DiagnosticsEngine::Level DiagLevl,
+                                             const clang::Diagnostic &Info) {
+      return FixIncludes->fix(DiagLevl, Info);
+    });
+    Clang->setExternalSemaSource(FixIncludes->unresolvedNameRecorder());
+  }
+
+  // Let feature modules register PP callbacks before Includes.collect().
+  for (const auto &L : ASTListeners)
+    L->beforeIncludes(*Clang);
 
   IncludeStructure Includes;
   include_cleaner::PragmaIncludes PI;
@@ -746,12 +625,10 @@ ParsedAST::build(llvm::StringRef Filename, const ParseInputs &Inputs,
   std::vector<Decl *> ParsedDecls = Action->takeTopLevelDecls();
   // AST traversals should exclude the preamble, to avoid performance cliffs.
   Clang->getASTContext().setTraversalScope(ParsedDecls);
-  if (!CTChecks.empty()) {
-    // Run the AST-dependent part of the clang-tidy checks.
-    // (The preprocessor part ran already, via PPCallbacks).
-    trace::Span Tracer("ClangTidyMatch");
-    CTFinder.matchAST(Clang->getASTContext());
-  }
+
+  // Let feature modules run post-Execute work (e.g. AST matchers).
+  for (const auto &L : ASTListeners)
+    L->afterExecute(*Clang);
 
   // XXX: This is messy: clang-tidy checks flush some diagnostics at EOF.
   // However Action->EndSourceFile() would destroy the ASTContext!
@@ -767,11 +644,13 @@ ParsedAST::build(llvm::StringRef Filename, const ParseInputs &Inputs,
   // FIXME: Also skip generation of diagnostics altogether to speed up ast
   // builds when we are patching a stale preamble.
   // Add diagnostics from the preamble, if any.
-  if (Preamble)
-    llvm::append_range(Diags, Patch->patchedDiags());
+  if (Preamble) {
+    auto Patched = Patch->patchedDiags();
+    llvm::append_range(Diags, std::move(Patched));
+  }
   // Finally, add diagnostics coming from the AST.
   {
-    std::vector<Diag> D = ASTDiags.take(&*CTContext);
+    std::vector<Diag> D = ASTDiags.take();
     Diags.insert(Diags.end(), D.begin(), D.end());
   }
   ParsedAST Result(Filename, Inputs.Version, std::move(Preamble),

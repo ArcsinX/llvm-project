@@ -18,7 +18,7 @@
 #include "TestFS.h"
 #include "TestIndex.h"
 #include "TestTU.h"
-#include "TidyProvider.h"
+#include "../ClangTidyFeatureModule.h"
 #include "index/MemIndex.h"
 #include "index/Ref.h"
 #include "index/Relation.h"

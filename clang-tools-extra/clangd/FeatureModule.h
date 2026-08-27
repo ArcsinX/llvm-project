@@ -22,6 +22,7 @@
 #include <vector>
 
 namespace clang {
+class ASTContext;
 class CompilerInstance;
 namespace clangd {
 struct Diag;
@@ -80,7 +81,7 @@ public:
     const ThreadsafeFS &FS;
   };
   /// Called by the server to prepare this module for use.
-  void initialize(const Facilities &F);
+  virtual void initialize(const Facilities &F);
 
   /// Requests that the module cancel background work and go idle soon.
   /// Does not block, the caller will call blockUntilIdle() instead.
@@ -108,15 +109,29 @@ public:
     /// Listeners are destroyed once the AST is built.
     virtual ~ASTListener() = default;
 
+    /// Called before IncludeStructure::collect() during preamble and main file
+    /// builds. Modules that need to register PP callbacks (e.g. tidy checks)
+    /// should use this hook. Only the Preprocessor is available.
+    virtual void beforeIncludes(CompilerInstance &CI) {}
+
     /// Called before every AST build, both for main file and preamble. The call
     /// happens immediately before FrontendAction::Execute(), with Preprocessor
     /// set up already and after BeginSourceFile() on main file was called.
     virtual void beforeExecute(CompilerInstance &CI) {}
 
+    /// Called after FrontendAction::Execute() and after the preprocessor has
+    /// processed end-of-file. The AST is fully built at this point.
+    virtual void afterExecute(CompilerInstance &CI) {}
+
     /// Called everytime a diagnostic is encountered. Modules can use this
     /// modify the final diagnostic, or store some information to surface code
     /// actions later on.
     virtual void sawDiagnostic(const clang::Diagnostic &, clangd::Diag &) {}
+
+    /// Called after the diagnostic is fully assembled (including notes and
+    /// fixes) and before it is returned to the caller. Modules can use this
+    /// to do final cleanup on the diagnostic.
+    virtual void finalizeDiag(clangd::Diag &) {}
   };
   /// Can be called asynchronously before building an AST.
   virtual std::unique_ptr<ASTListener> astListeners() { return nullptr; }
@@ -189,6 +204,15 @@ public:
   }
   template <typename Mod> const Mod *get() const {
     return const_cast<FeatureModuleSet *>(this)->get<Mod>();
+  }
+  // Remove a module by pointer. O(n) scan.
+  void remove(FeatureModule *M) {
+    for (auto It = Modules.begin(); It != Modules.end(); ++It) {
+      if (It->get() == M) {
+        Modules.erase(It);
+        return;
+      }
+    }
   }
 };
 

@@ -22,7 +22,7 @@
 #include "SourceCode.h"
 #include "TestFS.h"
 #include "TestTU.h"
-#include "TidyProvider.h"
+#include "../ClangTidyFeatureModule.h"
 #include "support/Context.h"
 #include "clang/AST/DeclTemplate.h"
 #include "clang/Basic/FileEntry.h"

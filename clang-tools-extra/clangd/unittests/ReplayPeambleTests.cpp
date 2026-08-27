@@ -19,7 +19,7 @@
 #include "ParsedAST.h"
 #include "SourceCode.h"
 #include "TestTU.h"
-#include "TidyProvider.h"
+#include "../ClangTidyFeatureModule.h"
 #include "support/Context.h"
 #include "clang/AST/DeclTemplate.h"
 #include "clang/Basic/FileEntry.h"
@@ -96,6 +96,10 @@ struct ReplayPreambleCheck : public tidy::ClangTidyCheck {
       : ClangTidyCheck(Name, Context) {}
   void registerPPCallbacks(const SourceManager &SM, Preprocessor *PP,
                            Preprocessor *ModuleExpanderPP) override {
+    // Clear stale entries from preamble build when new checks are created for
+    // the main file build. Each build phase creates fresh tidy checks.
+    Includes.clear();
+    SkippedFiles.clear();
     PP->addPPCallbacks(::std::make_unique<ReplayPreamblePPCallback>(SM));
   }
 };
@@ -181,6 +185,11 @@ TEST(ReplayPreambleTest, IncludesAndSkippedFiles) {
   Config Cfg;
   Cfg.Diagnostics.ClangTidy.FastCheckFilter = Config::FastCheckPolicy::Loose;
   WithContextValue WithCfg(Config::Key, std::move(Cfg));
+
+  // Tidy checks now run during both preamble and main file builds, so
+  // PPCallbacks fire twice. Clear to only capture the replayed includes.
+  Includes.clear();
+  SkippedFiles.clear();
 
   const auto &AST = TU.build();
   const auto &SM = AST.getSourceManager();

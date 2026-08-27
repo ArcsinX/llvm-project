@@ -17,7 +17,7 @@
 #ifndef LLVM_CLANG_TOOLS_EXTRA_CLANGD_UNITTESTS_TESTTU_H
 #define LLVM_CLANG_TOOLS_EXTRA_CLANGD_UNITTESTS_TESTTU_H
 
-#include "../TidyProvider.h"
+#include "../ClangTidyFeatureModule.h"
 #include "Compiler.h"
 #include "FeatureModule.h"
 #include "ParsedAST.h"
@@ -62,7 +62,7 @@ struct TestTU {
   // Predefine macros such as __UINTPTR_TYPE__.
   bool PredefineMacros = false;
 
-  TidyProvider ClangTidyProvider = {};
+  mutable TidyProvider ClangTidyProvider = {};
   // Index to use when building AST.
   const SymbolIndex *ExternalIndex = nullptr;
 

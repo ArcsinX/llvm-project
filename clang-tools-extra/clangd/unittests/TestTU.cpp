@@ -73,8 +73,6 @@ ParseInputs TestTU::inputs(MockFS &FS) const {
     FS.OverlayRealFileSystemForModules = true;
   Inputs.TFS = &FS;
   Inputs.Opts = ParseOptions();
-  if (ClangTidyProvider)
-    Inputs.ClangTidyProvider = ClangTidyProvider;
   Inputs.Index = ExternalIndex;
   return Inputs;
 }
@@ -116,6 +114,20 @@ ParsedAST TestTU::build() const {
   MockFS FS;
   auto Inputs = inputs(FS);
   Inputs.Opts = ParseOpts;
+
+  // Wrap the TidyProvider in a ClangTidyFeatureModule and add to FeatureModules.
+  std::unique_ptr<FeatureModuleSet> TidyFeatureModules;
+  FeatureModuleSet *EffectiveModules = FeatureModules;
+  if (ClangTidyProvider) {
+    TidyFeatureModules = std::make_unique<FeatureModuleSet>();
+    auto TidyMod = std::make_unique<ClangTidyFeatureModule>();
+    TidyMod->setProvider([&](tidy::ClangTidyOptions &Opts,
+                             llvm::StringRef File) { ClangTidyProvider(Opts, File); });
+    TidyFeatureModules->add<ClangTidyFeatureModule>(std::move(TidyMod));
+    EffectiveModules = TidyFeatureModules.get();
+  }
+  Inputs.FeatureModules = EffectiveModules;
+
   StoreDiags Diags;
   auto CI = buildCompilerInvocation(Inputs, Diags);
   assert(CI && "Failed to build compilation invocation.");

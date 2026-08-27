@@ -16,7 +16,7 @@
 #include "SyncAPI.h"
 #include "TestFS.h"
 #include "TestTU.h"
-#include "TidyProvider.h"
+#include "../ClangTidyFeatureModule.h"
 #include "refactor/Tweak.h"
 #include "support/MemoryTree.h"
 #include "support/Path.h"
@@ -1228,7 +1228,14 @@ TEST(ClangdServer, TidyOverrideTest) {
   TidyProvider Provider = combine(std::move(Stack));
   CDB.ExtraClangFlags = {"-xc++"};
   auto Opts = ClangdServer::optsForTest();
-  Opts.ClangTidyProvider = Provider;
+  FeatureModuleSet ModuleSet;
+  auto TidyMod = std::make_unique<ClangTidyFeatureModule>();
+  TidyMod->setProvider(
+      [&](tidy::ClangTidyOptions &Opts, llvm::StringRef File) {
+        Provider(Opts, File);
+      });
+  ModuleSet.add(std::move(TidyMod));
+  Opts.FeatureModules = &ModuleSet;
   ClangdServer Server(CDB, FS, Opts, &DiagConsumer);
   const char *SourceContents = R"cpp(
     struct Foo { Foo(); Foo(Foo&); Foo(Foo&&); };
