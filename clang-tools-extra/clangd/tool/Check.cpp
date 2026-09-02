@@ -27,6 +27,7 @@
 #include "../clang-tidy/ClangTidyModule.h"
 #include "../clang-tidy/ClangTidyOptions.h"
 #include "../clang-tidy/GlobList.h"
+#include "ClangTidyFeatureModule.h"
 #include "ClangdLSPServer.h"
 #include "ClangdServer.h"
 #include "CodeComplete.h"
@@ -205,7 +206,7 @@ public:
     std::vector<std::string> CC1Args;
     Inputs.CompileCommand = Cmd;
     Inputs.TFS = &TFS;
-    Inputs.ClangTidyProvider = Opts.ClangTidyProvider;
+    Inputs.FeatureModules = Opts.FeatureModules;
     Inputs.Opts.PreambleParseForwardingFunctions =
         Opts.PreambleParseForwardingFunctions;
     if (Contents) {
@@ -322,13 +323,17 @@ public:
                                     llvm::StringRef) {
         Opts.Checks = Checks.str();
       };
-      Inputs.ClangTidyProvider = CTProvider;
+      FeatureModuleSet TimingModules;
+      TimingModules.add(std::make_unique<ClangTidyFeatureModule>(CTProvider));
+      FeatureModuleSet *OriginalModules = Inputs.FeatureModules;
+      Inputs.FeatureModules = &TimingModules;
       // Sigh, can't reuse the CompilerInvocation.
       IgnoringDiagConsumer IgnoreDiags;
       auto Invocation = buildCompilerInvocation(Inputs, IgnoreDiags);
       Duration Val = Time([&] {
         ParsedAST::build(File, Inputs, std::move(Invocation), {}, Preamble);
       });
+      Inputs.FeatureModules = OriginalModules;
       vlog("    Measured {0} ==> {1}", Checks, Val);
       return Val;
     };
@@ -367,9 +372,6 @@ public:
       log("  {0} = {1:P0}", Check, Fraction);
     }
     log("Finished individual clang-tidy checks");
-
-    // Restore old options.
-    Inputs.ClangTidyProvider = Opts.ClangTidyProvider;
   }
 
   // Build Inlay Hints for the entire AST or the specified range

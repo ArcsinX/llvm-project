@@ -71,20 +71,22 @@ class Dummy final : public FeatureModule {
 static FeatureModuleRegistry::Add<Dummy>
     X("dummy", "Dummy feature module with dummy tweak");
 
-MATCHER_P(moduleName, Name, "") { return arg.getName() == Name; }
 MATCHER_P(tweakID, ID, "") { return arg->id() == llvm::StringRef(ID); }
 
-// In this test, it is assumed that for unittests executable, all feature
-// modules are added to the registry only here (in this file). To implement
-// modules for clangd tool, one need to link them directly to the clangd
-// executable in clangd/tool/CMakeLists.txt.
+bool hasModule(llvm::StringRef Name) {
+  for (const auto &Entry : FeatureModuleRegistry::entries())
+    if (Entry.getName() == Name)
+      return true;
+  return false;
+}
+
 TEST(FeatureModulesRegistryTest, DummyModule) {
-  EXPECT_THAT(FeatureModuleRegistry::entries(),
-              ElementsAre(moduleName("dummy")));
+  EXPECT_TRUE(hasModule("dummy"));
+  EXPECT_TRUE(hasModule("clang-tidy"));
   FeatureModuleSet Set = FeatureModuleSet::fromRegistry();
-  ASSERT_EQ(Set.end() - Set.begin(), 1u);
   std::vector<std::unique_ptr<Tweak>> Tweaks;
-  Set.begin()->contributeTweaks(Tweaks);
+  for (auto &Module : Set)
+    Module.contributeTweaks(Tweaks);
   EXPECT_THAT(Tweaks, ElementsAre(tweakID("DummyTweak")));
 }
 

@@ -7,6 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "TestTU.h"
+#include "ClangTidyFeatureModule.h"
 #include "CompileCommands.h"
 #include "Compiler.h"
 #include "Diagnostics.h"
@@ -73,8 +74,6 @@ ParseInputs TestTU::inputs(MockFS &FS) const {
     FS.OverlayRealFileSystemForModules = true;
   Inputs.TFS = &FS;
   Inputs.Opts = ParseOptions();
-  if (ClangTidyProvider)
-    Inputs.ClangTidyProvider = ClangTidyProvider;
   Inputs.Index = ExternalIndex;
   return Inputs;
 }
@@ -101,6 +100,14 @@ std::shared_ptr<const PreambleData>
 TestTU::preamble(PreambleParsedCallback PreambleCallback) const {
   MockFS FS;
   auto Inputs = inputs(FS);
+  FeatureModuleSet TidyModules;
+  if (ClangTidyProvider) {
+    assert(!FeatureModules &&
+           "TestTU cannot combine explicit and clang-tidy feature modules");
+    TidyModules.add(
+        std::make_unique<ClangTidyFeatureModule>(ClangTidyProvider));
+    Inputs.FeatureModules = &TidyModules;
+  }
   IgnoreDiagnostics Diags;
   auto CI = buildCompilerInvocation(Inputs, Diags);
   assert(CI && "Failed to build compilation invocation.");
@@ -116,6 +123,14 @@ ParsedAST TestTU::build() const {
   MockFS FS;
   auto Inputs = inputs(FS);
   Inputs.Opts = ParseOpts;
+  FeatureModuleSet TidyModules;
+  if (ClangTidyProvider) {
+    assert(!FeatureModules &&
+           "TestTU cannot combine explicit and clang-tidy feature modules");
+    TidyModules.add(
+        std::make_unique<ClangTidyFeatureModule>(ClangTidyProvider));
+    Inputs.FeatureModules = &TidyModules;
+  }
   StoreDiags Diags;
   auto CI = buildCompilerInvocation(Inputs, Diags);
   assert(CI && "Failed to build compilation invocation.");
