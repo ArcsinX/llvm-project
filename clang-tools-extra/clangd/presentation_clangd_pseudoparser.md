@@ -29,8 +29,9 @@
 | **04** | [**How GLR Pseudo-Parsing Works Without Headers**](#slide-4) | Directive trees, C++ BNF grammar, and parse forests | [View Slide 4 ➡](#slide-4) |
 | **05** | [**Semantic Navigation, Disambiguation & Header BFS**](#slide-5) | `isTypeContext` classifier & bounded header traversal | [View Slide 5 ➡](#slide-5) |
 | **06** | [**Concrete Benchmarks: `Sema.cpp` Head-to-Head**](#slide-6) | Real-world metrics measured on LLVM codebase | [View Slide 6 ➡](#slide-6) |
-| **07** | [**Supported Language Features in Clangd**](#slide-7) | Outlines, folding, definition jumps, highlights & hover | [View Slide 7 ➡](#slide-7) |
-| **08** | [**Target Use Cases & Future Roadmap**](#slide-8) | Monorepos, Cloud IDEs, and incremental pseudo-parsing | [View Slide 8 ➡](#slide-8) |
+| **07** | [**Technology Comparison: Clang-Pseudo vs. Tree-sitter**](#slide-7) | Architectural trade-offs, preprocessor, and grammar models | [View Slide 7 ➡](#slide-7) |
+| **08** | [**Supported Language Features in Clangd**](#slide-8) | Outlines, folding, definition jumps, highlights & hover | [View Slide 8 ➡](#slide-8) |
+| **09** | [**Target Use Cases & Future Roadmap**](#slide-9) | Monorepos, Cloud IDEs, and incremental pseudo-parsing | [View Slide 9 ➡](#slide-9) |
 
 ---
 
@@ -38,7 +39,7 @@
 
 <a id="slide-1"></a>
 
-> <sub>**SLIDE 01 OF 08** &nbsp;|&nbsp; [📑 Index](#slide-navigator) &nbsp;|&nbsp; [Next: The Problem ▶](#slide-2)</sub>
+> <sub>**SLIDE 01 OF 09** &nbsp;|&nbsp; [📑 Index](#slide-navigator) &nbsp;|&nbsp; [Next: The Problem ▶](#slide-2)</sub>
 
 # 🚀 Slide 1: Instant C++ Tooling with Clang-Pseudo
 
@@ -75,7 +76,7 @@
 
 <a id="slide-2"></a>
 
-> <sub>**SLIDE 02 OF 08** &nbsp;|&nbsp; [◀ Prev: Summary](#slide-1) &nbsp;|&nbsp; [📑 Index](#slide-navigator) &nbsp;|&nbsp; [Next: Architecture ▶](#slide-3)</sub>
+> <sub>**SLIDE 02 OF 09** &nbsp;|&nbsp; [◀ Prev: Summary](#slide-1) &nbsp;|&nbsp; [📑 Index](#slide-navigator) &nbsp;|&nbsp; [Next: Architecture ▶](#slide-3)</sub>
 
 # ⚠️ Slide 2: The Problem: The Cost of Full Clang ASTs
 
@@ -119,7 +120,7 @@ flowchart TD
 
 <a id="slide-3"></a>
 
-> <sub>**SLIDE 03 OF 08** &nbsp;|&nbsp; [◀ Prev: The Problem](#slide-2) &nbsp;|&nbsp; [📑 Index](#slide-navigator) &nbsp;|&nbsp; [Next: GLR Engine ▶](#slide-4)</sub>
+> <sub>**SLIDE 03 OF 09** &nbsp;|&nbsp; [◀ Prev: The Problem](#slide-2) &nbsp;|&nbsp; [📑 Index](#slide-navigator) &nbsp;|&nbsp; [Next: GLR Engine ▶](#slide-4)</sub>
 
 # 🏗️ Slide 3: Architecture & Integration in Clangd
 
@@ -194,7 +195,7 @@ flowchart LR
 
 <a id="slide-4"></a>
 
-> <sub>**SLIDE 04 OF 08** &nbsp;|&nbsp; [◀ Prev: Architecture](#slide-3) &nbsp;|&nbsp; [📑 Index](#slide-navigator) &nbsp;|&nbsp; [Next: Navigation ▶](#slide-5)</sub>
+> <sub>**SLIDE 04 OF 09** &nbsp;|&nbsp; [◀ Prev: Architecture](#slide-3) &nbsp;|&nbsp; [📑 Index](#slide-navigator) &nbsp;|&nbsp; [Next: Navigation ▶](#slide-5)</sub>
 
 # ⚙️ Slide 4: How GLR Pseudo-Parsing Works Without Headers
 
@@ -239,7 +240,7 @@ flowchart TD
 
 <a id="slide-5"></a>
 
-> <sub>**SLIDE 05 OF 08** &nbsp;|&nbsp; [◀ Prev: GLR Engine](#slide-4) &nbsp;|&nbsp; [📑 Index](#slide-navigator) &nbsp;|&nbsp; [Next: Benchmarks ▶](#slide-6)</sub>
+> <sub>**SLIDE 05 OF 09** &nbsp;|&nbsp; [◀ Prev: GLR Engine](#slide-4) &nbsp;|&nbsp; [📑 Index](#slide-navigator) &nbsp;|&nbsp; [Next: Benchmarks ▶](#slide-6)</sub>
 
 # 🎯 Slide 5: Semantic Navigation, Disambiguation & Header BFS
 
@@ -309,7 +310,7 @@ sequenceDiagram
 
 <a id="slide-6"></a>
 
-> <sub>**SLIDE 06 OF 08** &nbsp;|&nbsp; [◀ Prev: Navigation](#slide-5) &nbsp;|&nbsp; [📑 Index](#slide-navigator) &nbsp;|&nbsp; [Next: Features ▶](#slide-7)</sub>
+> <sub>**SLIDE 06 OF 09** &nbsp;|&nbsp; [◀ Prev: Navigation](#slide-5) &nbsp;|&nbsp; [📑 Index](#slide-navigator) &nbsp;|&nbsp; [Next: Tree-sitter Comparison ▶](#slide-7)</sub>
 
 # 📊 Slide 6: Concrete Benchmark: `Sema.cpp` Head-to-Head
 
@@ -348,7 +349,7 @@ Clang-Pseudo       [▏] 0.14 MB (590x Reduction)
 </details>
 
 <div align="right">
-  <sub><a href="#slide-navigator">⬆ Top</a> &nbsp;|&nbsp; <a href="#slide-7">Next: Features ➡</a></sub>
+  <sub><a href="#slide-navigator">⬆ Top</a> &nbsp;|&nbsp; <a href="#slide-7">Next: Tree-sitter Comparison ➡</a></sub>
 </div>
 
 ---
@@ -357,9 +358,66 @@ Clang-Pseudo       [▏] 0.14 MB (590x Reduction)
 
 <a id="slide-7"></a>
 
-> <sub>**SLIDE 07 OF 08** &nbsp;|&nbsp; [◀ Prev: Benchmarks](#slide-6) &nbsp;|&nbsp; [📑 Index](#slide-navigator) &nbsp;|&nbsp; [Next: Roadmap ▶](#slide-8)</sub>
+> <sub>**SLIDE 07 OF 09** &nbsp;|&nbsp; [◀ Prev: Benchmarks](#slide-6) &nbsp;|&nbsp; [📑 Index](#slide-navigator) &nbsp;|&nbsp; [Next: Supported Features ▶](#slide-8)</sub>
 
-# 🛠️ Slide 7: Supported Language Features
+# ⚔️ Slide 7: Technology Comparison: Clang-Pseudo vs. Tree-sitter
+
+Both technologies aim to provide fast, error-tolerant syntax parsing without relying on heavy compiler pipelines. However, their architectural philosophies and trade-offs differ fundamentally:
+
+```mermaid
+flowchart LR
+    subgraph TreeSitter["🌳 Tree-sitter (Editor-Centric)"]
+        TSG["Handcrafted grammar.js\n(Custom JS DSL)"] --> TSP["LR/GLR with Eager Resolution\n(Static Precedence Annotations)"]
+        TSP --> TSCST["Single Concrete Syntax Tree (CST)\n(Sub-millisecond incremental reparse)"]
+        TSCST --> TSUse["Syntax Highlighting, Folding & Text Objects\n(Neovim, Zed, Helix, GitHub)"]
+    end
+
+    subgraph ClangPseudo["⚙️ Clang-Pseudo (Compiler-Centric)"]
+        CPG["ISO C++ Standard BNF\n(cxx.bnf from N4860 draft)"] --> CPP["Pure GLR + Parse Forest DAG\n(DirectiveTree + Clang Lexer)"]
+        CPP --> CPCST["Disambiguated Syntax Tree + Scopes\n(Transitive BFS include resolution)"]
+        CPCST --> CPUse["LSP Go-to-Definition, Symbols, Hover & Refactoring\n(Clangd Native FeatureModule)"]
+    end
+
+    style TreeSitter fill:#f0fdf4,stroke:#16a34a,stroke-width:1.5px
+    style ClangPseudo fill:#eff6ff,stroke:#2563eb,stroke-width:1.5px
+```
+
+### Architectural Feature Matrix
+
+| Dimension | Tree-sitter (`tree-sitter-cpp`) | Clang-Pseudo (`clang-pseudo`) | Advantage / Rationale |
+| :--- | :--- | :--- | :--- |
+| **Grammar Origin** | Handcrafted JavaScript DSL (`grammar.js`) | **Official ISO C++ Standard BNF** (C++20 N4860) | 📐 **Clang-Pseudo**: Rigorous standard compliance |
+| **Ambiguity Handling** | **Eager resolution**: Static precedence & conflict rules | **Parse Forest (DAG)**: Retains alternatives, disambiguates globally | 🎯 **Clang-Pseudo**: Handles subtle C++ ambiguities |
+| **Preprocessor Support** | Parses `#ifdef` as syntax nodes (fails on split tokens) | **DirectiveTree + Clang Lexer**: Selects clean branches | 🛡️ **Clang-Pseudo**: Industrial macro resilience |
+| **Incremental Parsing** | **Sub-millisecond** reparse on single keystroke edits | Whole-file re-parse (~40–50 ms on 3,000 lines) | ⚡ **Tree-sitter**: Unmatched typing latency |
+| **Cross-File Resolution** | None (strictly single-file buffer syntax) | **Transitive Header BFS** (resolves headers & `<vector>`) | 🌐 **Clang-Pseudo**: Powers LSP Go-to-Definition |
+| **Query Mechanism** | Standardized S-expression queries (`(function) @fn`) | Native C++ AST walkers (`walkSymbols`, `buildScopes`) | 📝 **Tree-sitter**: Universal query DSL |
+| **Primary Sweet Spot** | In-editor highlighting, indentation, structural editing | Resilient LSP intelligence & compiler-grade fallback | 🤝 **Complementary Technologies** |
+
+<details>
+<summary>🎙️ <b>Presenter Notes & Talking Points</b> (click to expand)</summary>
+
+- **Why didn't Clangd just embed Tree-sitter?**
+  1. *Preprocessor realities:* Real C++ code frequently places `#ifdef` inside expressions or function arguments. Tree-sitter struggles with this and emits broad `(ERROR)` nodes, while `clang-pseudo`'s `DirectiveTree` handles conditional compilation cleanly.
+  2. *Standard conformance:* Tree-sitter-cpp is a community-maintained approximation. Clang requires formal ISO standard BNF grammar rules to cleanly interoperate with compiler specifications.
+  3. *LSP capabilities:* Tree-sitter provides syntax highlighting and folding, but cannot do cross-header Go-to-Definition or scope disambiguation.
+- **What can Clang-Pseudo learn from Tree-sitter?**
+  - Tree-sitter's incremental node-reuse algorithm on single-character edits is the gold standard for editor typing latency. Bringing incremental sub-tree reuse to Clang-Pseudo is an active roadmap item.
+</details>
+
+<div align="right">
+  <sub><a href="#slide-navigator">⬆ Top</a> &nbsp;|&nbsp; <a href="#slide-8">Next: Supported Features ➡</a></sub>
+</div>
+
+---
+
+<br>
+
+<a id="slide-8"></a>
+
+> <sub>**SLIDE 08 OF 09** &nbsp;|&nbsp; [◀ Prev: Tree-sitter](#slide-7) &nbsp;|&nbsp; [📑 Index](#slide-navigator) &nbsp;|&nbsp; [Next: Roadmap ▶](#slide-9)</sub>
+
+# 🛠️ Slide 8: Supported Language Features
 
 ```mermaid
 flowchart TD
@@ -394,18 +452,18 @@ flowchart TD
 </details>
 
 <div align="right">
-  <sub><a href="#slide-navigator">⬆ Top</a> &nbsp;|&nbsp; <a href="#slide-8">Next: Roadmap ➡</a></sub>
+  <sub><a href="#slide-navigator">⬆ Top</a> &nbsp;|&nbsp; <a href="#slide-9">Next: Roadmap ➡</a></sub>
 </div>
 
 ---
 
 <br>
 
-<a id="slide-8"></a>
+<a id="slide-9"></a>
 
-> <sub>**SLIDE 08 OF 08** &nbsp;|&nbsp; [◀ Prev: Features](#slide-7) &nbsp;|&nbsp; [📑 Index](#slide-navigator)</sub>
+> <sub>**SLIDE 09 OF 09** &nbsp;|&nbsp; [◀ Prev: Features](#slide-8) &nbsp;|&nbsp; [📑 Index](#slide-navigator)</sub>
 
-# 🔮 Slide 8: Target Use Cases & Future Roadmap
+# 🔮 Slide 9: Target Use Cases & Future Roadmap
 
 ### 🎯 Primary Use Cases
 
@@ -434,7 +492,7 @@ flowchart LR
 <details>
 <summary>🎙️ <b>Presenter Notes & Talking Points</b> (click to expand)</summary>
 
-- **Incremental Parsing:** GLR can reparse only the affected subtree on each keystroke, achieving single-digit millisecond latency.
+- **Incremental Parsing:** GLR can reparse only the affected subtree on each keystroke, achieving single-digit millisecond latency like Tree-sitter.
 - **Workspace Indexing:** Imagine indexing the entire LLVM repository in 15 seconds instead of 15 minutes, because you parse syntax without evaluating transitive preprocessor headers!
 - **Call to Action:** PseudoModule demonstrates that high-performance syntax-based tooling is practical, robust, and complementary to full compiler ASTs.
 </details>
