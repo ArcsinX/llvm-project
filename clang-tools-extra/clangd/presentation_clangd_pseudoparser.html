@@ -403,7 +403,144 @@
       </table>
     </section>
 
-    <!-- Slide 8: Supported Features -->
+    <!-- Slide 8: The AI Frontier -->
+    <section>
+      <h2>🤖 The AI Frontier: Clang-Pseudo for LLMs &amp; Agents</h2>
+      <p style="font-size:0.75em; color:#94a3b8;">
+        Unlocking Real-Time Syntax Gating, AST Skeletonization &amp; Hyper-Fast Agent Loops
+      </p>
+
+      <div class="grid-2" style="font-size:0.7em; margin-top:15px;">
+        <div class="card" style="background:rgba(147,51,234,0.08); border-color:rgba(147,51,234,0.4);">
+          <h4 style="color:#c084fc; margin-top:0;">⚡ Real-Time Syntax Gating</h4>
+          <ul style="padding-left:20px; line-height:1.6;">
+            <li><b>Problem:</b> LLMs hallucinate malformed C++ (mismatched brackets, invalid declarations). Clang can't verify without full headers.</li>
+            <li><b>Solution:</b> Clang-Pseudo validates raw C++ grammar in <b>&lt;10ms</b>, enabling <b>grammar-constrained decoding</b> and instant rejection of syntactically impossible draft sequences.</li>
+          </ul>
+        </div>
+        <div class="card" style="background:rgba(147,51,234,0.08); border-color:rgba(147,51,234,0.4);">
+          <h4 style="color:#c084fc; margin-top:0;">📐 AST Skeletonization for RAG</h4>
+          <ul style="padding-left:20px; line-height:1.6;">
+            <li><b>Problem:</b> Feeding raw files into LLMs wastes tokens on function bodies, comments, and whitespace.</li>
+            <li><b>Solution:</b> Clang-Pseudo extracts class, template &amp; function signatures in <b>50ms</b>, packing <b>10x more repo context</b> into the LLM context window.</li>
+          </ul>
+        </div>
+        <div class="card" style="background:rgba(147,51,234,0.08); border-color:rgba(147,51,234,0.4);">
+          <h4 style="color:#c084fc; margin-top:0;">🔄 70x Faster Agent Iteration</h4>
+          <ul style="padding-left:20px; line-height:1.6;">
+            <li><b>Problem:</b> Coding agents (Cursor, Claude Code) make multi-step edits. Waiting <b>3.6–10s per edit</b> for AST rebuild stalls the agent.</li>
+            <li><b>Solution:</b> Clang-Pseudo provides <b>instant verification</b> of modified symbols and scopes—<b>50ms vs 3,600ms</b>.</li>
+          </ul>
+        </div>
+        <div class="card" style="background:rgba(147,51,234,0.08); border-color:rgba(147,51,234,0.4);">
+          <h4 style="color:#c084fc; margin-top:0;">🗃️ Zero-Setup Monorepo Indexing</h4>
+          <ul style="padding-left:20px; line-height:1.6;">
+            <li><b>Problem:</b> AI vector DBs need semantic boundaries (functions, classes), not arbitrary text chunks.</li>
+            <li><b>Solution:</b> Clang-Pseudo indexes massive repos without <code>compile_commands.json</code>—ideal for embedding pipelines &amp; code search.</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <!-- Slide 8b: Why Clang-Pseudo over Tree-sitter for AI -->
+    <section>
+      <h2>🤖 Why Clang-Pseudo Over Tree-sitter for AI</h2>
+      <p style="font-size:0.65em; color:#94a3b8;">
+        Cross-file heuristics can be built on <em>either</em> parser. But Clang-Pseudo's advantages compound across every layer:
+      </p>
+
+      <table class="bench-table" style="font-size:0.58em; margin-top:10px;">
+        <thead>
+          <tr>
+            <th>AI Scenario</th>
+            <th>Tree-sitter Limitation</th>
+            <th>Clang-Pseudo Advantage</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><b>🛡️ LLM Output Validation</b></td>
+            <td>Handcrafted grammar silently <b>accepts invalid C++</b> or <b>rejects valid C++</b>. Unreliable signal.</td>
+            <td style="color:#34d399;"><b>ISO Standard BNF</b>: formally correct accept/reject. AI can <b>trust the verdict</b>.</td>
+          </tr>
+          <tr>
+            <td><b>🎯 Ambiguity-Aware Reasoning</b></td>
+            <td>Eagerly picks <b>one interpretation</b>. <code>X * y;</code> forced to one parse—AI is blind to alternatives.</td>
+            <td style="color:#34d399;"><b>Parse Forest (DAG)</b> retains <b>all valid parses</b>. AI scores alternatives with broader context.</td>
+          </tr>
+          <tr>
+            <td><b>🌐 Cross-File Header Quality</b></td>
+            <td>You <em>can</em> build cross-file on Tree-sitter, but <b>headers break it worst</b>: <code>&lt;vector&gt;</code> is dense with <code>#ifdef</code> and templates → widespread <code>(ERROR)</code> nodes that <b>poison symbol resolution</b>.</td>
+            <td style="color:#34d399;"><b>Clang's own lexer + DirectiveTree</b> handle every preprocessor pattern. ISO grammar parses template specializations, SFINAE, concepts. Cross-file results are <b>compiler-grade</b>.</td>
+          </tr>
+          <tr>
+            <td><b>🔗 Declaration Classification</b></td>
+            <td>Coarse node types (<code>type_identifier</code>, <code>identifier</code>). Can't distinguish class from namespace from typedef without fragile ad-hoc queries.</td>
+            <td style="color:#34d399;">Grammar rules map to ISO productions (<code>class-specifier</code>, <code>namespace-definition</code>). Precise <b>DeclKind</b> (Class, Enum, Function, Namespace) with <b>zero heuristics</b>.</td>
+          </tr>
+          <tr>
+            <td><b>📐 Skeleton Precision</b></td>
+            <td>Simplified grammar <b>misparses</b> complex templates, nested lambdas, <code>constexpr if</code>.</td>
+            <td style="color:#34d399;">Full ISO grammar: <b>concepts, auto returns, variadic templates</b>. Compiler-faithful skeletons.</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <p style="font-size:0.65em; color:#60a5fa; margin-top:15px;">
+        <b>⚠️ The Compounding Effect:</b> Each header parsed with Tree-sitter accumulates errors (broken <code>#ifdef</code>, misidentified templates). Over a 4-hop include chain <code>File.cpp → Header.h → Base.h → &lt;vector&gt;</code>, errors compound. Clang-Pseudo uses the <b>same lexer &amp; grammar as the real compiler</b>, so fidelity stays high at every hop.
+      </p>
+    </section>
+
+    <!-- Slide 8c: What about a custom preprocessor? -->
+    <section>
+      <h2>🤖 "Custom Preprocessor on Tree-sitter?"</h2>
+      <p style="font-size:0.65em; color:#94a3b8;">
+        A custom <code>DirectiveTree</code>-like preprocessor closes <b>one</b> gap. The deeper ones are architectural:
+      </p>
+
+      <table class="bench-table" style="font-size:0.58em; margin-top:10px;">
+        <thead>
+          <tr>
+            <th>Gap</th>
+            <th>Fixed by Custom Preprocessor?</th>
+            <th>Why / Why Not</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><b><code>#ifdef</code> branch selection</b></td>
+            <td style="color:#34d399;"><b>✅ Yes</b></td>
+            <td>Feasible to build, similar to <code>DirectiveTree</code></td>
+          </tr>
+          <tr>
+            <td><b>Macro expansion</b><br><code>Q_OBJECT</code>, <code>BOOST_*</code></td>
+            <td style="color:#f87171;"><b>❌ No</b></td>
+            <td>Requires reimplementing the C preprocessor (<code>##</code> pasting, variadic macros, <code>_Pragma</code>). Clang-Pseudo uses GLR <b>Opaque nodes</b>; Tree-sitter emits <code>(ERROR)</code>.</td>
+          </tr>
+          <tr>
+            <td><b>Grammar ambiguity</b><br><code>X*y;</code>, <code>T(x);</code></td>
+            <td style="color:#f87171;"><b>❌ No</b></td>
+            <td><b>Fundamental:</b> Tree-sitter's static <code>prec()</code> forces one parse. Clang-Pseudo's GLR <b>Parse Forest</b> retains all. No preprocessor can change the parsing algorithm.</td>
+          </tr>
+          <tr>
+            <td><b>Lexer edge cases</b><br><code>&gt;&gt;</code>, raw strings, UCN</td>
+            <td style="color:#f87171;"><b>❌ No</b></td>
+            <td>Tree-sitter uses its own lexer. Clang-Pseudo uses <b><code>clang::Lexer</code></b> — every C++ lexical edge case handled.</td>
+          </tr>
+          <tr>
+            <td><b>DeclKind precision</b><br>class vs namespace vs typedef</td>
+            <td style="color:#f87171;"><b>❌ No</b></td>
+            <td>Requires ISO grammar productions, not Tree-sitter's coarse <code>type_identifier</code> nodes.</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <p style="font-size:0.7em; color:#f59e0b; margin-top:15px; font-weight:600;">
+        A custom preprocessor gets you ~30% of the way. The remaining 70% — grammar, lexer, declaration classification — are properties of the <b>parser itself</b>.
+      </p>
+    </section>
+
+    <!-- Slide 9: Supported Features -->
     <section>
       <h2>Supported Language Features in Clangd</h2>
       <div class="grid-2" style="font-size:0.75em; margin-top:20px;">
