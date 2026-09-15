@@ -1,0 +1,487 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Instant C++ Tooling with Clang-Pseudo</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+  <!-- Reveal.js CSS -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/reveal.js/4.5.0/reveal.min.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/reveal.js/4.5.0/theme/black.min.css" id="theme">
+  <!-- Highlight.js theme -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/monokai-sublime.min.css">
+
+  <style>
+    :root {
+      --r-main-font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      --r-heading-font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      --r-heading-text-transform: none;
+      --accent-color: #3b82f6;
+      --success-color: #10b981;
+      --danger-color: #ef4444;
+      --warning-color: #f59e0b;
+    }
+    .reveal {
+      font-size: 26px;
+    }
+    .reveal h1, .reveal h2, .reveal h3 {
+      font-weight: 700;
+      letter-spacing: -0.02em;
+    }
+    .reveal h1 { font-size: 2.1em; }
+    .reveal h2 { font-size: 1.5em; color: #60a5fa; }
+    .reveal h3 { font-size: 1.1em; color: #94a3b8; }
+    
+    .badge {
+      display: inline-block;
+      padding: 4px 12px;
+      border-radius: 9999px;
+      font-size: 0.6em;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    .badge-blue { background: rgba(59, 130, 246, 0.2); color: #60a5fa; border: 1px solid #3b82f6; }
+    .badge-green { background: rgba(16, 185, 129, 0.2); color: #34d399; border: 1px solid #10b981; }
+
+    .grid-2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 20px;
+      text-align: left;
+      align-items: start;
+    }
+    .card {
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 12px;
+      padding: 20px;
+      margin: 10px 0;
+    }
+    .card-highlight {
+      background: rgba(59, 130, 246, 0.08);
+      border-color: rgba(59, 130, 246, 0.4);
+    }
+    .card-success {
+      background: rgba(16, 185, 129, 0.08);
+      border-color: rgba(16, 185, 129, 0.4);
+    }
+    .card-danger {
+      background: rgba(239, 68, 68, 0.08);
+      border-color: rgba(239, 68, 68, 0.4);
+    }
+
+    .stat-num {
+      font-size: 2.2em;
+      font-weight: 800;
+      line-height: 1;
+      margin-bottom: 5px;
+    }
+    .stat-green { color: #34d399; }
+    .stat-blue { color: #60a5fa; }
+    .stat-red { color: #f87171; }
+    
+    table.bench-table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 15px 0;
+      font-size: 0.8em;
+    }
+    table.bench-table th {
+      background: rgba(255, 255, 255, 0.1);
+      padding: 10px 14px;
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      color: #93c5fd;
+      text-align: left;
+    }
+    table.bench-table td {
+      padding: 9px 14px;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      text-align: left;
+    }
+    table.bench-table tr:nth-child(even) {
+      background: rgba(255, 255, 255, 0.02);
+    }
+
+    .mermaid {
+      background: rgba(0, 0, 0, 0.2);
+      border-radius: 8px;
+      padding: 10px;
+    }
+    .mermaid svg {
+      max-height: 380px !important;
+    }
+    code.code-box {
+      background: #1e1e2e;
+      padding: 12px;
+      border-radius: 8px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 0.75em;
+      display: block;
+      white-space: pre;
+      line-height: 1.4;
+      text-align: left;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+    }
+    ul.bullet-list {
+      text-align: left;
+      font-size: 0.85em;
+      line-height: 1.5;
+    }
+    ul.bullet-list li {
+      margin-bottom: 8px;
+    }
+  </style>
+</head>
+<body>
+<div class="reveal">
+  <div class="slides">
+
+    <!-- Slide 1: Title -->
+    <section>
+      <span class="badge badge-blue">LLVM / Clangd Innovation</span>
+      <h1 style="margin-top: 15px;">Instant C++ Tooling<br><span style="color:#60a5fa;">with Clang-Pseudo</span></h1>
+      <h3>Bringing Sub-Second Syntax Navigation & Fallback to Clangd</h3>
+      
+      <div style="margin-top: 40px;" class="grid-2">
+        <div class="card card-danger">
+          <div style="font-size:0.75em; color:#f87171; font-weight:600;">TRADITIONAL CLANG AST</div>
+          <div class="stat-num stat-red">3.60 s</div>
+          <div style="font-size:0.7em; color:#94a3b8;">Cold didOpen latency · 83 MB Preamble</div>
+        </div>
+        <div class="card card-success">
+          <div style="font-size:0.75em; color:#34d399; font-weight:600;">CLANGD + PSEUDO-PARSER</div>
+          <div class="stat-num stat-green">0.05 s</div>
+          <div style="font-size:0.7em; color:#94a3b8;"><b>72x Faster</b> · 140 KB Memory (~590x smaller)</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Slide 2: The Problem -->
+    <section>
+      <h2>The Problem: The Cost of Full Clang ASTs</h2>
+      <p style="font-size:0.8em; color:#94a3b8; margin-bottom: 20px;">
+        Standard Clangd requires building a complete AST and parsing all transitively included headers before responding.
+      </p>
+
+      <div class="mermaid">
+      flowchart LR
+          A["Open File (Sema.cpp)"] --> B["Locate compile_commands"]
+          B --> C["Parse 100s of Headers\n(82.8 MB Preamble)"]
+          C --> D["Full Semantic Typing\n& Template Instantiation"]
+          D --> E["AST Ready (3.6+ seconds)"]
+          style C fill:#451a1a,stroke:#ef4444,stroke-width:1.5px,color:#fca5a5
+          style D fill:#451a1a,stroke:#ef4444,stroke-width:1.5px,color:#fca5a5
+          style E fill:#064e3b,stroke:#10b981,stroke-width:1.5px,color:#6ee7b7
+      </div>
+
+      <div class="grid-2" style="margin-top:20px; font-size:0.75em;">
+        <div class="card">
+          <b style="color:#f87171;">⚠️ Slow Cold Start:</b> 3 to 10+ second freezes on large files like <code>Sema.cpp</code> before outline or folding are available.
+        </div>
+        <div class="card">
+          <b style="color:#f87171;">⚠️ Fragile Environment:</b> Missing <code>compile_commands.json</code> or broken headers leads to <b>zero IDE features</b>.
+        </div>
+      </div>
+    </section>
+
+    <!-- Slide 3: Architecture & Integration -->
+    <section>
+      <h2>Architecture & Clangd Integration</h2>
+      <p style="font-size:0.8em; color:#94a3b8;">
+        Integrated seamlessly via Clangd's <code>FeatureModule</code> extension point.
+      </p>
+
+      <div class="mermaid">
+      flowchart LR
+          subgraph Client["LSP Client (Editor)"]
+              LSP["didOpen / documentSymbol / definition / hover"]
+          end
+          subgraph ClangdCore["Clangd Server"]
+              Server["ClangdServer"]
+              FMS["FeatureModuleSet"] --> PM["PseudoModule"]
+              PM -. "blockASTBuild()" .-> Server
+          end
+          subgraph Engine["Clang-Pseudo Engine"]
+              PM --> Lex["DirectiveTree Lexer"]
+              Lex --> GLR["GLR Parser & C++ BNF"]
+              GLR --> Forest["Compact Parse Forest (140 KB)"]
+              Forest --> BFS["Scope Graph & Header BFS"]
+          end
+          LSP --> Server
+          BFS --> LSP
+          style PM fill:#1e3a8a,stroke:#3b82f6,stroke-width:2px,color:#bfdbfe
+          style GLR fill:#14532d,stroke:#22c55e,stroke-width:2px,color:#bbf7d0
+      </div>
+
+      <div class="grid-2" style="font-size:0.75em; margin-top:15px;">
+        <div class="card">
+          <b>Mode 1: Pure Mode (<code>--use-pseudo-parser=true</code>)</b><br>
+          Completely suppresses heavy AST compilation. Instant responsiveness.
+        </div>
+        <div class="card">
+          <b>Mode 2: Resilient Fallback</b><br>
+          AST runs normally; seamlessly falls back to PseudoModule if AST fails or returns empty.
+        </div>
+      </div>
+    </section>
+
+    <!-- Slide 4: GLR Engine Mechanics -->
+    <section>
+      <h2>How GLR Pseudo-Parsing Works Without Headers</h2>
+      <p style="font-size:0.8em; color:#94a3b8;">
+        Decoupled from preprocessor and compiler state using Generalized LR (GLR).
+      </p>
+
+      <div class="mermaid">
+      flowchart TD
+          Code["Source Code (Sema.cpp)"] --> Lex["1. Fast Lexing: Raw Token Stream"]
+          Lex --> DirTree["2. DirectiveTree: Select active branches, strip #includes"]
+          DirTree --> Table["3. C++ BNF Grammar (1,475 states, 28,165 actions)"]
+          Table --> Forest["4. Parse Forest (shared nodes, 140 KB)"]
+          Forest --> Disambig["5. Disambiguation Heuristics"]
+          Disambig --> Features["6. Instant Features (Outline, Ranges, Navigation)"]
+          style Forest fill:#064e3b,stroke:#10b981,stroke-width:1.5px,color:#a7f3d0
+          style Features fill:#1e3a8a,stroke:#3b82f6,stroke-width:1.5px,color:#bfdbfe
+      </div>
+
+      <ul class="bullet-list" style="margin-top:15px;">
+        <li><b>Header-Independent:</b> Never parses or includes transitive header code.</li>
+        <li><b>Error-Tolerant:</b> Handles incomplete or broken code gracefully using opaque grammar nodes.</li>
+      </ul>
+    </section>
+
+    <!-- Slide 5: Semantic Navigation & Disambiguation -->
+    <section>
+      <h2>Semantic Navigation & Disambiguation</h2>
+      <p style="font-size:0.8em; color:#94a3b8;">
+        Distinguishing types vs. values and traversing included headers accurately.
+      </p>
+
+      <div class="grid-2" style="font-size:0.75em;">
+        <div class="card card-highlight">
+          <h4 style="color:#60a5fa; margin-top:0;">1. Syntactic Context (<code>isTypeContext</code>)</h4>
+          <ul style="padding-left:20px; line-height:1.6;">
+            <li><code>ClangdServer::adjustParseInputs</code><br>
+            Followed by <code>::</code> &rarr; <b>Type context</b>. Jumps to <code>class ClangdServer</code> in header, not constructor in <code>.cpp</code>!</li>
+            <li><code>ClangdServer::ClangdServer(...)</code><br>
+            1st is class in <code>.h</code>; 2nd before <code>(</code> is constructor.</li>
+            <li><code>Foo Foo; Foo.x = 1;</code><br>
+            1st is <code>struct Foo</code>; 2nd & 3rd are local variable <code>Foo</code>.</li>
+          </ul>
+        </div>
+
+        <div class="card card-highlight">
+          <h4 style="color:#60a5fa; margin-top:0;">2. Transitive Header BFS Search</h4>
+          <ul style="padding-left:20px; line-height:1.6;">
+            <li>Bounded Breadth-First Search (BFS) over <code>#include</code> directives.</li>
+            <li>Prioritizes quoted project headers first.</li>
+            <li>Avoids recursive explosion into standard library internals (<code>&lt;__algorithm/*&gt;</code>).</li>
+            <li><b><code>#include &lt;vector&gt;</code>:</b> Direct jump to system standard library headers.</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <!-- Slide 6: Benchmark on Sema.cpp -->
+    <section>
+      <h2>Benchmark: Head-to-Head on <code>Sema.cpp</code></h2>
+      <p style="font-size:0.75em; color:#94a3b8;">
+        Source: <code>clang/lib/Sema/Sema.cpp</code> (3,121 lines, heavy Clang/LLVM headers). Benchmark from <code>TidyFastChecks.py</code>.
+      </p>
+
+      <table class="bench-table">
+        <thead>
+          <tr>
+            <th>Benchmark Metric</th>
+            <th>Regular Clang AST</th>
+            <th>Pseudo-Parser (<code>--use-pseudo-parser</code>)</th>
+            <th>Improvement</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><b><code>didOpen</code> &rarr; Document Symbols Ready</b></td>
+            <td style="color:#f87171;"><b>3,601 ms</b> (~3.60 s)</td>
+            <td style="color:#34d399;"><b>50.2 ms</b> (~0.05 s)</td>
+            <td><b style="color:#34d399;">71.8x Faster ⚡</b></td>
+          </tr>
+          <tr>
+            <td><b>Source File Parsing Time</b></td>
+            <td>349 ms (post-preamble)</td>
+            <td style="color:#34d399;"><b>42 ms</b></td>
+            <td><b style="color:#34d399;">8.3x Faster ⚡</b></td>
+          </tr>
+          <tr>
+            <td><b>Preamble Generation Time</b></td>
+            <td style="color:#f87171;">3,110 ms (3.11 s)</td>
+            <td style="color:#34d399;"><b>0 ms (None needed)</b></td>
+            <td><b style="color:#34d399;">Instant</b></td>
+          </tr>
+          <tr>
+            <td><b>In-Memory Tree / Preamble Size</b></td>
+            <td style="color:#f87171;"><b>82.8 MB</b> (82,855,164 B)</td>
+            <td style="color:#34d399;"><b>140 KB</b> (143,535 B)</td>
+            <td><b style="color:#34d399;">590x Smaller 📉</b></td>
+          </tr>
+          <tr>
+            <td><b>Symbols Extracted</b></td>
+            <td>104 symbols</td>
+            <td>102 symbols</td>
+            <td><b>98.1% Fidelity</b></td>
+          </tr>
+          <tr>
+            <td><b>Go-To-Definition Latency</b></td>
+            <td>1.6 ms (after 3.6s wait)</td>
+            <td>31.7 ms (sub-frame)</td>
+            <td>Interactive</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <!-- Slide 7: Technology Comparison: Clang-Pseudo vs. Tree-sitter -->
+    <section>
+      <h2>Clang-Pseudo vs. Tree-sitter</h2>
+      <p style="font-size:0.75em; color:#94a3b8;">
+        Comparing Two Modern Header-Free Parsing Paradigms
+      </p>
+
+      <table class="bench-table" style="font-size:0.65em; margin-top:15px;">
+        <thead>
+          <tr>
+            <th>Dimension</th>
+            <th>Tree-sitter (<code>tree-sitter-cpp</code>)</th>
+            <th>Clang-Pseudo (<code>clang-pseudo</code>)</th>
+            <th>Advantage / Trade-off</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><b>Grammar Origin</b></td>
+            <td>Handcrafted JS DSL (<code>grammar.js</code>)</td>
+            <td style="color:#34d399;"><b>Official ISO C++ Standard BNF</b> (C++20 N4860)</td>
+            <td><b>Clang-Pseudo:</b> Rigorous ISO compliance</td>
+          </tr>
+          <tr>
+            <td><b>Ambiguity Resolution</b></td>
+            <td>Eager resolution via static precedence &amp; conflicts</td>
+            <td style="color:#34d399;"><b>Parse Forest DAG</b> with global heuristic disambiguation</td>
+            <td><b>Clang-Pseudo:</b> Handles subtle C++ ambiguities</td>
+          </tr>
+          <tr>
+            <td><b>Preprocessor Support</b></td>
+            <td>Parses <code>#ifdef</code> as syntax nodes (fragile on split tokens)</td>
+            <td style="color:#34d399;"><b>DirectiveTree + Clang Lexer:</b> Active branch selection</td>
+            <td><b>Clang-Pseudo:</b> Industrial macro resilience</td>
+          </tr>
+          <tr>
+            <td><b>Incremental Speed</b></td>
+            <td style="color:#34d399;"><b>Sub-millisecond</b> reparse on single keystroke edits</td>
+            <td>Whole-file re-parse (~40–50 ms on 3,000 lines)</td>
+            <td><b>Tree-sitter:</b> Unmatched typing latency</td>
+          </tr>
+          <tr>
+            <td><b>Cross-File Navigation</b></td>
+            <td>None (strictly single-file buffer syntax)</td>
+            <td style="color:#34d399;"><b>Transitive Header BFS:</b> Resolves headers &amp; libc++</td>
+            <td><b>Clang-Pseudo:</b> Powers LSP Go-to-Definition</td>
+          </tr>
+          <tr>
+            <td><b>Query Mechanism</b></td>
+            <td style="color:#34d399;">Standardized S-expression queries (<code>(function) @fn</code>)</td>
+            <td>Native C++ AST walkers (<code>walkSymbols</code>, <code>buildScopes</code>)</td>
+            <td><b>Tree-sitter:</b> Universal query DSL</td>
+          </tr>
+          <tr>
+            <td><b>Primary Sweet Spot</b></td>
+            <td>In-editor highlighting, folding &amp; text objects</td>
+            <td>Resilient LSP intelligence &amp; compiler fallback</td>
+            <td><b>Complementary Technologies</b></td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <!-- Slide 8: Supported Features -->
+    <section>
+      <h2>Supported Language Features in Clangd</h2>
+      <div class="grid-2" style="font-size:0.75em; margin-top:20px;">
+        <div class="card card-success">
+          <h4 style="color:#34d399; margin-top:0;">✅ Navigation & Structure</h4>
+          <ul style="padding-left:20px; line-height:1.7;">
+            <li><b>Document Symbols:</b> Hierarchical symbol outline</li>
+            <li><b>Selection Ranges:</b> AST-guided smart selection</li>
+            <li><b>Folding Ranges:</b> Instant block, class, & function folding</li>
+            <li><b>Document Highlights:</b> Highlighting symbol occurrences</li>
+          </ul>
+        </div>
+        <div class="card card-success">
+          <h4 style="color:#34d399; margin-top:0;">✅ Cross-File Resolution</h4>
+          <ul style="padding-left:20px; line-height:1.7;">
+            <li><b>Go-to-Definition & Declaration:</b> Local scopes & header BFS</li>
+            <li><b>#include Directives GTD:</b> Jump to project & libc++ headers</li>
+            <li><b>Hover:</b> Type definitions & header file paths</li>
+            <li><b>Zero Configuration:</b> Operates without compile database</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <!-- Slide 8: Use Cases & Roadmap -->
+    <section>
+      <h2>Use Cases & Roadmap</h2>
+      
+      <div class="grid-2" style="font-size:0.75em; margin-top:20px;">
+        <div class="card">
+          <h4 style="color:#60a5fa; margin-top:0;">Target Use Cases</h4>
+          <ul style="padding-left:20px; line-height:1.6;">
+            <li><b>Massive Monorepos & Cloud IDEs:</b> Eliminates multi-second CPU freezes upon opening files or switching branches.</li>
+            <li><b>Unconfigured / Newly Cloned Repos:</b> Immediate out-of-the-box browsing before build systems configure.</li>
+            <li><b>Resource-Constrained Environments:</b> Containerized or embedded environments where 300MB/file is prohibitive.</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h4 style="color:#60a5fa; margin-top:0;">Future Roadmap</h4>
+          <ul style="padding-left:20px; line-height:1.6;">
+            <li><b>Incremental GLR Parsing:</b> Keystroke-level instant re-parse.</li>
+            <li><b>Text-Based Semantic Completion:</b> Approximate completions without compiler invocation.</li>
+            <li><b>Syntax-Directed Fast Refactoring:</b> Lightweight local renames.</li>
+          </ul>
+        </div>
+      </div>
+
+      <p style="margin-top:35px; font-size:0.9em; color:#34d399; font-weight:600;">
+        Thank You! Questions & Discussion
+      </p>
+    </section>
+
+  </div>
+</div>
+
+<!-- Reveal.js & Plugins -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/reveal.js/4.5.0/reveal.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/reveal.js/4.5.0/plugin/highlight/highlight.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+
+<script>
+  mermaid.initialize({
+    startOnLoad: false,
+    theme: 'dark',
+    securityLevel: 'loose',
+    flowchart: { useMaxWidth: true, htmlLabels: true }
+  });
+
+  Reveal.initialize({
+    hash: true,
+    slideNumber: true,
+    transition: 'slide',
+    plugins: [ RevealHighlight ]
+  }).then(() => {
+    mermaid.run({
+      nodes: document.querySelectorAll('.mermaid')
+    });
+  });
+</script>
+</body>
+</html>
