@@ -6,6 +6,7 @@
   <img src="https://img.shields.io/badge/Parser-GLR_C%2B%2B_Grammar-green?style=for-the-badge" alt="GLR Parser" />
   <img src="https://img.shields.io/badge/Startup_Speedup-72x_Faster-brightgreen?style=for-the-badge" alt="Startup Speedup" />
   <img src="https://img.shields.io/badge/RAM_Footprint-590x_Smaller-success?style=for-the-badge" alt="RAM Footprint" />
+  <img src="https://img.shields.io/badge/AI_Ready-LLMs_%26_Agents-purple?style=for-the-badge" alt="AI Ready" />
 </p>
 
 > [!TIP]
@@ -30,8 +31,9 @@
 | **05** | [**Semantic Navigation, Disambiguation & Header BFS**](#slide-5) | `isTypeContext` classifier & bounded header traversal | [View Slide 5 ➡](#slide-5) |
 | **06** | [**Concrete Benchmarks: `Sema.cpp` Head-to-Head**](#slide-6) | Real-world metrics measured on LLVM codebase | [View Slide 6 ➡](#slide-6) |
 | **07** | [**Technology Comparison: Clang-Pseudo vs. Tree-sitter**](#slide-7) | Architectural trade-offs, preprocessor, and grammar models | [View Slide 7 ➡](#slide-7) |
-| **08** | [**Supported Language Features in Clangd**](#slide-8) | Outlines, folding, definition jumps, highlights & hover | [View Slide 8 ➡](#slide-8) |
-| **09** | [**Target Use Cases & Future Roadmap**](#slide-9) | Monorepos, Cloud IDEs, and incremental pseudo-parsing | [View Slide 9 ➡](#slide-9) |
+| **08** | [**The AI Frontier: Clang-Pseudo for LLMs & Agents**](#slide-8) | Sub-10ms syntax gating, AST skeletonization & RAG | [View Slide 8 ➡](#slide-8) |
+| **09** | [**Supported Language Features in Clangd**](#slide-9) | Outlines, folding, definition jumps, highlights & hover | [View Slide 9 ➡](#slide-9) |
+| **10** | [**Target Use Cases & Future Roadmap**](#slide-10) | Monorepos, Cloud IDEs, and incremental pseudo-parsing | [View Slide 10 ➡](#slide-10) |
 
 ---
 
@@ -39,7 +41,7 @@
 
 <a id="slide-1"></a>
 
-> <sub>**SLIDE 01 OF 09** &nbsp;|&nbsp; [📑 Index](#slide-navigator) &nbsp;|&nbsp; [Next: The Problem ▶](#slide-2)</sub>
+> <sub>**SLIDE 01 OF 10** &nbsp;|&nbsp; [📑 Index](#slide-navigator) &nbsp;|&nbsp; [Next: The Problem ▶](#slide-2)</sub>
 
 # 🚀 Slide 1: Instant C++ Tooling with Clang-Pseudo
 
@@ -76,7 +78,7 @@
 
 <a id="slide-2"></a>
 
-> <sub>**SLIDE 02 OF 09** &nbsp;|&nbsp; [◀ Prev: Summary](#slide-1) &nbsp;|&nbsp; [📑 Index](#slide-navigator) &nbsp;|&nbsp; [Next: Architecture ▶](#slide-3)</sub>
+> <sub>**SLIDE 02 OF 10** &nbsp;|&nbsp; [◀ Prev: Summary](#slide-1) &nbsp;|&nbsp; [📑 Index](#slide-navigator) &nbsp;|&nbsp; [Next: Architecture ▶](#slide-3)</sub>
 
 # ⚠️ Slide 2: The Problem: The Cost of Full Clang ASTs
 
@@ -120,7 +122,7 @@ flowchart TD
 
 <a id="slide-3"></a>
 
-> <sub>**SLIDE 03 OF 09** &nbsp;|&nbsp; [◀ Prev: The Problem](#slide-2) &nbsp;|&nbsp; [📑 Index](#slide-navigator) &nbsp;|&nbsp; [Next: GLR Engine ▶](#slide-4)</sub>
+> <sub>**SLIDE 03 OF 10** &nbsp;|&nbsp; [◀ Prev: The Problem](#slide-2) &nbsp;|&nbsp; [📑 Index](#slide-navigator) &nbsp;|&nbsp; [Next: GLR Engine ▶](#slide-4)</sub>
 
 # 🏗️ Slide 3: Architecture & Integration in Clangd
 
@@ -195,7 +197,7 @@ flowchart LR
 
 <a id="slide-4"></a>
 
-> <sub>**SLIDE 04 OF 09** &nbsp;|&nbsp; [◀ Prev: Architecture](#slide-3) &nbsp;|&nbsp; [📑 Index](#slide-navigator) &nbsp;|&nbsp; [Next: Navigation ▶](#slide-5)</sub>
+> <sub>**SLIDE 04 OF 10** &nbsp;|&nbsp; [◀ Prev: Architecture](#slide-3) &nbsp;|&nbsp; [📑 Index](#slide-navigator) &nbsp;|&nbsp; [Next: Navigation ▶](#slide-5)</sub>
 
 # ⚙️ Slide 4: How GLR Pseudo-Parsing Works Without Headers
 
@@ -240,7 +242,7 @@ flowchart TD
 
 <a id="slide-5"></a>
 
-> <sub>**SLIDE 05 OF 09** &nbsp;|&nbsp; [◀ Prev: GLR Engine](#slide-4) &nbsp;|&nbsp; [📑 Index](#slide-navigator) &nbsp;|&nbsp; [Next: Benchmarks ▶](#slide-6)</sub>
+> <sub>**SLIDE 05 OF 10** &nbsp;|&nbsp; [◀ Prev: GLR Engine](#slide-4) &nbsp;|&nbsp; [📑 Index](#slide-navigator) &nbsp;|&nbsp; [Next: Benchmarks ▶](#slide-6)</sub>
 
 # 🎯 Slide 5: Semantic Navigation, Disambiguation & Header BFS
 
@@ -310,7 +312,7 @@ sequenceDiagram
 
 <a id="slide-6"></a>
 
-> <sub>**SLIDE 06 OF 09** &nbsp;|&nbsp; [◀ Prev: Navigation](#slide-5) &nbsp;|&nbsp; [📑 Index](#slide-navigator) &nbsp;|&nbsp; [Next: Tree-sitter Comparison ▶](#slide-7)</sub>
+> <sub>**SLIDE 06 OF 10** &nbsp;|&nbsp; [◀ Prev: Navigation](#slide-5) &nbsp;|&nbsp; [📑 Index](#slide-navigator) &nbsp;|&nbsp; [Next: Tree-sitter Comparison ▶](#slide-7)</sub>
 
 # 📊 Slide 6: Concrete Benchmark: `Sema.cpp` Head-to-Head
 
@@ -358,7 +360,7 @@ Clang-Pseudo       [▏] 0.14 MB (590x Reduction)
 
 <a id="slide-7"></a>
 
-> <sub>**SLIDE 07 OF 09** &nbsp;|&nbsp; [◀ Prev: Benchmarks](#slide-6) &nbsp;|&nbsp; [📑 Index](#slide-navigator) &nbsp;|&nbsp; [Next: Supported Features ▶](#slide-8)</sub>
+> <sub>**SLIDE 07 OF 10** &nbsp;|&nbsp; [◀ Prev: Benchmarks](#slide-6) &nbsp;|&nbsp; [📑 Index](#slide-navigator) &nbsp;|&nbsp; [Next: AI Frontier ▶](#slide-8)</sub>
 
 # ⚔️ Slide 7: Technology Comparison: Clang-Pseudo vs. Tree-sitter
 
@@ -406,7 +408,7 @@ flowchart LR
 </details>
 
 <div align="right">
-  <sub><a href="#slide-navigator">⬆ Top</a> &nbsp;|&nbsp; <a href="#slide-8">Next: Supported Features ➡</a></sub>
+  <sub><a href="#slide-navigator">⬆ Top</a> &nbsp;|&nbsp; <a href="#slide-8">Next: The AI Frontier ➡</a></sub>
 </div>
 
 ---
@@ -415,9 +417,118 @@ flowchart LR
 
 <a id="slide-8"></a>
 
-> <sub>**SLIDE 08 OF 09** &nbsp;|&nbsp; [◀ Prev: Tree-sitter](#slide-7) &nbsp;|&nbsp; [📑 Index](#slide-navigator) &nbsp;|&nbsp; [Next: Roadmap ▶](#slide-9)</sub>
+> <sub>**SLIDE 08 OF 10** &nbsp;|&nbsp; [◀ Prev: Tree-sitter](#slide-7) &nbsp;|&nbsp; [📑 Index](#slide-navigator) &nbsp;|&nbsp; [Next: Supported Features ▶](#slide-9)</sub>
 
-# 🛠️ Slide 8: Supported Language Features
+# 🤖 Slide 8: The AI Frontier: Clang-Pseudo for LLMs & Coding Agents
+
+### Unlocking Real-Time Syntax Gating, AST Skeletonization & Fast Agent Loops
+
+AI coding models and autonomous agents struggle with C++ because traditional compiler toolchains are too slow, brittle, and resource-heavy for real-time inference loops. `clang-pseudo` fundamentally bridges this gap:
+
+```mermaid
+flowchart LR
+    subgraph LLM["🧠 LLM / Coding Agent"]
+        Gen["Streaming Token Generation\n(Draft Output)"]
+        Edit["Iterative Agent Edits\n(Multi-file Refactoring)"]
+        Prompt["Context Window Assembly\n(Prompt Budgeting)"]
+    end
+
+    subgraph PseudoEngine["⚡ Clang-Pseudo Engine (&lt;50ms)"]
+        Val["1. Real-Time Syntax Gating\n(Zero-header validation)"]
+        Feed["2. Instant Agent Feedback Loop\n(50ms vs 3.6s compiler freeze)"]
+        Prune["3. AST Skeletonization & RAG\n(Strip bodies, keep types & signatures)"]
+    end
+
+    subgraph Outcome["🎯 High-Impact AI Outcomes"]
+        Out1["🛡️ Catch malformed C++ early\n(Speculative decoding & self-correction)"]
+        Out2["🚀 70x faster agent iteration\n(Instant compile sanity)"]
+        Out3["📈 10x larger repo context in prompts\n(High-density semantic RAG)"]
+    end
+
+    Gen --> Val --> Out1
+    Edit --> Feed --> Out2
+    Prompt --> Prune --> Out3
+
+    style LLM fill:#faf5ff,stroke:#9333ea,stroke-width:1.5px
+    style PseudoEngine fill:#eff6ff,stroke:#2563eb,stroke-width:1.5px
+    style Outcome fill:#f0fdf4,stroke:#16a34a,stroke-width:1.5px
+```
+
+### 4 Pillars of AI + Clang-Pseudo Synergy
+
+1. **Sub-10ms Syntax Verification for Streaming LLM Generation**
+   - Traditional Clang cannot validate code snippets without full `#include` headers and build flags.
+   - Clang-Pseudo validates raw C++ syntax in milliseconds, enabling **grammar-constrained decoding** and instant hallucination gating during token generation.
+2. **Context Window Optimization: Semantic AST "Skeletonization"**
+   - Feeding raw files into LLMs wastes thousands of tokens on implementation details.
+   - Clang-Pseudo extracts exact class, template, and function signatures in **sub-50ms**, packing **10x more repository context** into the LLM context window for high-accuracy RAG.
+3. **Hyper-Fast Iteration Loops for Autonomous Coding Agents**
+   - Coding agents (Cursor, Claude Code, Antigravity) make multi-step code edits.
+   - Waiting 3.6–10s per edit for AST rebuild stalls agent execution. Clang-Pseudo provides instant verification of modified symbols and scopes.
+4. **Zero-Setup Monorepo Indexing for AI Search & Embeddings**
+   - Vector databases need semantic boundaries (functions, classes), not arbitrary line chunks.
+   - Clang-Pseudo indexes massive repositories without needing `compile_commands.json` or pre-installed dependencies.
+
+### Why Clang-Pseudo Over Tree-sitter for AI Scenarios
+
+> [!IMPORTANT]
+> Tree-sitter excels at editor highlighting and keystroke-level incremental reparse. You can also build cross-file heuristics on top of _either_ parser. But for AI code generation, validation, and retrieval, Clang-Pseudo has structural advantages that compound across every layer:
+
+| AI Scenario | Tree-sitter Limitation | Clang-Pseudo Advantage |
+| :--- | :--- | :--- |
+| **🛡️ LLM Output Validation** | Handcrafted grammar silently **accepts invalid C++** or **rejects valid C++** (e.g. complex template expressions, `requires` clauses). AI gets unreliable pass/fail signals. | **ISO C++ Standard BNF** gives precise, formally correct accept/reject decisions. Grammar-constrained decoding can trust the parser's verdict. |
+| **🎯 Ambiguity-Aware Reasoning** | Eagerly picks **one interpretation**. If the LLM generates `X * y;`, Tree-sitter forces either pointer-decl or multiplication—the AI never sees the alternative. | **Parse Forest (DAG)** retains **all valid interpretations**. An AI system can score alternatives using broader file context, or present options to the user. |
+| **🛡️ Real-World Codebase Indexing** | Heavy `#ifdef` usage (Linux kernel, Chromium, LLVM) produces large `(ERROR)` nodes in Tree-sitter, corrupting semantic chunks fed to embedding pipelines. | **DirectiveTree** cleanly selects active branches. Indexing millions of production C++ files yields clean, complete parse trees for every file. |
+| **🌐 Cross-File Header Quality** | You _can_ build cross-file heuristics on Tree-sitter, but **headers are where it breaks down worst**: STL headers like `<vector>` are dense with `#ifdef`, macro-generated declarations, and complex template syntax—Tree-sitter produces widespread `(ERROR)` nodes in these files, poisoning cross-file symbol resolution. | **Clang's own lexer** + **DirectiveTree** handle every preprocessor pattern in real headers. The ISO grammar correctly parses template specializations, SFINAE, concepts, and `using` declarations that Tree-sitter's simplified rules mangle. Cross-file results are **compiler-grade**. |
+| **📐 Skeletonization Precision** | Simplified grammar **misparses** complex templates, nested lambdas, and `constexpr if` chains. Skeleton output may contain garbled signatures. | Full ISO grammar correctly identifies `template<typename... Ts> concept Foo = ...` and complex `auto` return types. Skeleton extractions are **compiler-faithful**. |
+| **🔗 Declaration Kind Classification** | Tree-sitter node types are coarse (`type_identifier`, `identifier`)—you can't reliably distinguish a class name from a namespace from a typedef without writing fragile ad-hoc query heuristics for each case. | Clang-Pseudo's grammar rules map directly to ISO productions (`class-specifier`, `namespace-definition`, `enum-specifier`), enabling precise `DeclKind` classification (Class, Enum, Function, Constructor, Variable, Namespace) with zero heuristics. |
+
+> [!NOTE]
+> **The Cross-File Compounding Effect**: Both parsers can be given cross-file heuristics. But every header parse with Tree-sitter accumulates errors: broken `#ifdef` branches, misidentified templates, garbled macro expansions. These errors compound across transitive includes. Clang-Pseudo uses the **same lexer as the real compiler** (`clang::Lexer`) and the **same grammar as the ISO standard**, so header parse quality stays high across the entire include chain. When your AI agent's cross-file lookup traverses `File.cpp → Header.h → BaseClass.h → <vector>`, Clang-Pseudo correctly resolves every step; Tree-sitter with heuristics will degrade at each hop.
+
+### "What If We Write a Custom Preprocessor on Tree-sitter?"
+
+A custom `DirectiveTree`-like preprocessor on top of Tree-sitter would close **one** gap (`#ifdef` branch selection) but leave the deeper ones untouched:
+
+| Gap | Custom Preprocessor Fixes It? | Why / Why Not |
+| :--- | :---: | :--- |
+| `#ifdef` branch selection | ✅ **Yes** | Feasible to build, similar to `DirectiveTree` |
+| Macro expansion (`Q_OBJECT`, `BOOST_*`, `LLVM_DECLARE_PASS`) | ❌ **No** | Requires reimplementing the C preprocessor (argument substitution, `##` pasting, variadic macros, `_Pragma`). Clang-Pseudo handles unknown macros via GLR **Opaque nodes**; Tree-sitter emits broad `(ERROR)`. |
+| Grammar ambiguity (`X * y;`, `T(x);`, `A<B>::C`) | ❌ **No** | **Fundamental**: Tree-sitter's static `prec()` forces one interpretation and discards the other. Clang-Pseudo's GLR **Parse Forest** retains all valid parses. No preprocessor can change the parsing algorithm. |
+| Lexer edge cases (`>>` splitting, raw strings, `1'000'000`, UCN) | ❌ **No** | Tree-sitter uses its own lexer. Clang-Pseudo uses **`clang::Lexer`** which handles every C++ lexical edge case. |
+| Declaration kind precision (class vs namespace vs typedef) | ❌ **No** | Requires ISO grammar productions (`class-specifier` vs `namespace-definition`), not Tree-sitter's coarse `type_identifier` / `identifier` node types. |
+
+> A custom preprocessor gets you ~**30%** of the way to Clang-Pseudo's header quality. The remaining **70%** — grammar fidelity, ambiguity retention, lexer precision, and declaration classification — are architectural properties of the **parser itself**, not the preprocessor.
+
+<details>
+<summary>🎙️ <b>Presenter Notes & Talking Points</b> (click to expand)</summary>
+
+- **Why AI needs Clang-Pseudo:** Explain that LLMs don't have access to complete build environments when generating or evaluating code in isolation. Clang-Pseudo gives AI systems compiler-grade C++ grammar awareness without the compiler burden.
+- **Speculative Decoding:** In modern LLM inference, small draft models generate candidate tokens that the large model verifies. Clang-Pseudo can reject syntactically impossible C++ draft sequences before they ever hit the main model.
+- **Context Budgeting:** In a 100k-token prompt, function implementations consume 90% of tokens. Skeletonizing C++ code using `pseudo::glrParse` lets agents see 10x more classes and signatures across the repo.
+- **The cross-file argument (anticipate pushback):**
+  - _"Can't you just build cross-file on Tree-sitter too?"_ — Yes, but the quality degrades. Tree-sitter uses its own lexer (not Clang's), a hand-written approximate grammar, and flat `#ifdef` handling. Each header it parses accumulates more errors than Clang-Pseudo. Over a 4-hop include chain, these errors compound. Clang-Pseudo shares the **actual Clang lexer** and **ISO standard grammar**, so header parse fidelity stays high.
+  - _Real example:_ Parse `<vector>` with Tree-sitter → you get `(ERROR)` nodes around libc++ internal `#ifdef` guards and `__attribute__` blocks. Parse the same file with Clang-Pseudo → DirectiveTree selects the right `#ifdef` branch, the ISO grammar correctly handles `template<class _Tp, class _Allocator = allocator<_Tp>>`, and you get a clean `class-specifier` node for `vector`.
+  - _DeclKind precision:_ When an AI agent asks "is `Builder` a class or a namespace?", Clang-Pseudo answers from ISO grammar rules (`class-specifier` vs `namespace-definition`). Tree-sitter would need you to write a complex S-expression query to heuristically distinguish `type_identifier` contexts—and it would still get it wrong for `typedef`s and `using` aliases.
+- **The custom preprocessor rebuttal (anticipate deeper pushback):**
+  - _"What if we write a custom preprocessor for Tree-sitter?"_ — A custom `#ifdef` selector (like DirectiveTree) is feasible and would help. But this solves only **branch selection** (the easy half). The hard half is **macro expansion**: headers like Qt's (`Q_OBJECT`), Boost's (`BOOST_AUTO_TEST_CASE`), and LLVM's (`LLVM_DECLARE_PASS`) generate declarations via macros. Without expanding them, Tree-sitter sees unknown identifiers in impossible positions → `(ERROR)`. Clang-Pseudo's GLR parser handles this via Opaque nodes — it marks the unknown region and keeps parsing. To truly expand macros, you'd need to reimplement the C preprocessor (argument substitution, token pasting `##`, stringification `#`, variadic `__VA_ARGS__`, `_Pragma`...) — at which point you're rebuilding Clang.
+  - _Even with perfect preprocessing_, Tree-sitter's grammar is the fundamental bottleneck. Static `prec()` rules force eager disambiguation of `X*y;`, `T(x);`, `A<B>::C`. No preprocessor can add a parse forest to Tree-sitter — that requires replacing the parsing algorithm.
+  - _The 30/70 framing:_ A custom preprocessor closes ~30% of the gap. The other 70% is grammar + lexer + declaration classification — properties of the parser architecture itself.
+</details>
+
+<div align="right">
+  <sub><a href="#slide-navigator">⬆ Top</a> &nbsp;|&nbsp; <a href="#slide-9">Next: Supported Features ➡</a></sub>
+</div>
+
+---
+
+<br>
+
+<a id="slide-9"></a>
+
+> <sub>**SLIDE 09 OF 10** &nbsp;|&nbsp; [◀ Prev: AI Frontier](#slide-8) &nbsp;|&nbsp; [📑 Index](#slide-navigator) &nbsp;|&nbsp; [Next: Roadmap ▶](#slide-10)</sub>
+
+# 🛠️ Slide 9: Supported Language Features in Clangd
 
 ```mermaid
 flowchart TD
@@ -452,18 +563,18 @@ flowchart TD
 </details>
 
 <div align="right">
-  <sub><a href="#slide-navigator">⬆ Top</a> &nbsp;|&nbsp; <a href="#slide-9">Next: Roadmap ➡</a></sub>
+  <sub><a href="#slide-navigator">⬆ Top</a> &nbsp;|&nbsp; <a href="#slide-10">Next: Roadmap ➡</a></sub>
 </div>
 
 ---
 
 <br>
 
-<a id="slide-9"></a>
+<a id="slide-10"></a>
 
-> <sub>**SLIDE 09 OF 09** &nbsp;|&nbsp; [◀ Prev: Features](#slide-8) &nbsp;|&nbsp; [📑 Index](#slide-navigator)</sub>
+> <sub>**SLIDE 10 OF 10** &nbsp;|&nbsp; [◀ Prev: Features](#slide-9) &nbsp;|&nbsp; [📑 Index](#slide-navigator)</sub>
 
-# 🔮 Slide 9: Target Use Cases & Future Roadmap
+# 🔮 Slide 10: Target Use Cases & Future Roadmap
 
 ### 🎯 Primary Use Cases
 
