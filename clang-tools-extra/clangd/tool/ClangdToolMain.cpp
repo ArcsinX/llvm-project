@@ -7,6 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "ClangdMain.h"
+#include "PseudoModule.h"
 
 int main(int argc, char **argv) {
   return clang::clangd::clangdMain(argc, argv);

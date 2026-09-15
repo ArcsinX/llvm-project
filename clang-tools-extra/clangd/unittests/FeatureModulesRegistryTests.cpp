@@ -79,13 +79,24 @@ MATCHER_P(tweakID, ID, "") { return arg->id() == llvm::StringRef(ID); }
 // modules for clangd tool, one need to link them directly to the clangd
 // executable in clangd/tool/CMakeLists.txt.
 TEST(FeatureModulesRegistryTest, DummyModule) {
-  EXPECT_THAT(FeatureModuleRegistry::entries(),
-              ElementsAre(moduleName("dummy")));
+  bool HasDummy = false;
+  for (const auto &Entry : FeatureModuleRegistry::entries()) {
+    if (Entry.getName() == "dummy")
+      HasDummy = true;
+  }
+  EXPECT_TRUE(HasDummy);
+
   FeatureModuleSet Set = FeatureModuleSet::fromRegistry();
-  ASSERT_EQ(Set.end() - Set.begin(), 1u);
+  EXPECT_GE(Set.end() - Set.begin(), 1u);
   std::vector<std::unique_ptr<Tweak>> Tweaks;
-  Set.begin()->contributeTweaks(Tweaks);
-  EXPECT_THAT(Tweaks, ElementsAre(tweakID("DummyTweak")));
+  for (auto &M : Set)
+    M.contributeTweaks(Tweaks);
+  bool HasDummyTweak = false;
+  for (const auto &T : Tweaks) {
+    if (T->id() == llvm::StringRef("DummyTweak"))
+      HasDummyTweak = true;
+  }
+  EXPECT_TRUE(HasDummyTweak);
 }
 
 } // namespace

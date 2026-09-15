@@ -276,6 +276,8 @@ ClangdServer::ClangdServer(const GlobalCompilationDatabase &CDB,
         *this->WorkScheduler,
         this->Index,
         this->TFS,
+        *this,
+        &this->CDB,
     };
     for (auto &Mod : *Opts.FeatureModules)
       Mod.initialize(F);
@@ -302,6 +304,12 @@ void ClangdServer::addDocument(PathRef File, llvm::StringRef Contents,
   bool NewModule = ModulesManager && ModulesManager->observeSourcePath(File);
 
   std::string ActualVersion = DraftMgr.addDraft(File, Version, Contents);
+  if (FeatureModules) {
+    for (const auto &Mod : *FeatureModules) {
+      if (Mod.blockASTBuild(File))
+        return;
+    }
+  }
   ParseOptions Opts;
   Opts.PreambleParseForwardingFunctions = PreambleParseForwardingFunctions;
   Opts.ImportInsertions = ImportInsertions;

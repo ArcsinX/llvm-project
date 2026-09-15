@@ -101,6 +101,7 @@ add_clang_library(clangDaemon STATIC
   PathMapping.cpp
   ProjectModules.cpp
   Protocol.cpp
+  PseudoModule.cpp
   Quality.cpp
   ParsedAST.cpp
   Preamble.cpp
@@ -152,11 +153,13 @@ add_clang_library(clangDaemon STATIC
   DEPENDS
   omp_gen
   ClangDriverOptions
+  cxx_gen
   )
 
 # Include generated CompletionModel headers.
 target_include_directories(clangDaemon PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}>
+  $<BUILD_INTERFACE:${CMAKE_BINARY_DIR}/tools/clang/tools/extra/pseudo/include>
 )
 
 clang_target_link_libraries(clangDaemon
@@ -187,6 +190,8 @@ target_link_libraries(clangDaemon
   ${LLVM_PTHREAD_LIB}
 
   clangIncludeCleaner
+  clangPseudo
+  clangPseudoCXX
   clangTidy
   clangTidyUtils
 
