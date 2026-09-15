@@ -82,6 +82,7 @@ add_unittest(ClangdUnitTests ClangdTests
   PreambleTests.cpp
   PrintASTTests.cpp
   ProjectAwareIndexTests.cpp
+  PseudoModuleTests.cpp
   QualityTests.cpp
   RIFFTests.cpp
   RenameTests.cpp

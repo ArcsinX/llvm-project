@@ -41,7 +41,11 @@ FeatureModuleSet FeatureModuleSet::fromRegistry() {
   FeatureModuleSet ModuleSet;
   for (FeatureModuleRegistry::entry E : FeatureModuleRegistry::entries()) {
     vlog("Adding feature module '{0}' ({1})", E.getName(), E.getDesc());
-    ModuleSet.add(E.instantiate());
+    auto M = E.instantiate();
+    if (void *Key = M->typeId())
+      ModuleSet.addImpl(Key, std::move(M), E.getName().data());
+    else
+      ModuleSet.add(std::move(M));
   }
   return ModuleSet;
 }

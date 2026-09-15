@@ -25,11 +25,13 @@ namespace clang {
 class CompilerInstance;
 namespace clangd {
 struct Diag;
+class ClangdServer;
 class LSPBinder;
 class SymbolIndex;
 class ThreadsafeFS;
 class TUScheduler;
 class Tweak;
+class GlobalCompilationDatabase;
 
 /// A FeatureModule contributes a vertical feature to clangd.
 ///
@@ -63,6 +65,9 @@ public:
     blockUntilIdle(Deadline::infinity());
   }
 
+  /// Returns an identifier pointer for downcasting, matching FeatureModuleSet::ID<Mod>::Key.
+  virtual void *typeId() const { return nullptr; }
+
   /// Called by the server to connect this feature module to LSP.
   /// The module should register the methods/notifications/commands it handles,
   /// and update the server capabilities to advertise them.
@@ -78,6 +83,8 @@ public:
     TUScheduler &Scheduler;
     const SymbolIndex *Index;
     const ThreadsafeFS &FS;
+    ClangdServer &Server;
+    const GlobalCompilationDatabase *CDB = nullptr;
   };
   /// Called by the server to prepare this module for use.
   void initialize(const Facilities &F);
@@ -121,8 +128,12 @@ public:
   /// Can be called asynchronously before building an AST.
   virtual std::unique_ptr<ASTListener> astListeners() { return nullptr; }
 
+  /// Allows a module to suppress building the Clang AST for an opened file.
+  virtual bool blockASTBuild(llvm::StringRef File) const { return false; }
+
 protected:
   /// Accessors for modules to access shared server facilities they depend on.
+  bool hasFacilities() const { return Fac.has_value(); }
   Facilities &facilities();
   /// The scheduler is used to run tasks on worker threads and access ASTs.
   TUScheduler &scheduler() { return facilities().Scheduler; }
@@ -130,6 +141,10 @@ protected:
   const SymbolIndex *index() { return facilities().Index; }
   /// The filesystem is used to read source files on disk.
   const ThreadsafeFS &fs() { return facilities().FS; }
+  /// The ClangdServer instance.
+  ClangdServer &server() { return facilities().Server; }
+  /// The compilation database to obtain compilation commands.
+  const GlobalCompilationDatabase *cdb() { return facilities().CDB; }
 
   /// Types of function objects that feature modules use for outgoing calls.
   /// (Bound throuh LSPBinder, made available here for convenience).
@@ -169,6 +184,8 @@ class FeatureModuleSet {
 
 public:
   FeatureModuleSet() = default;
+
+  template <typename Mod> static void *id() { return &ID<Mod>::Key; }
 
   static FeatureModuleSet fromRegistry();
 

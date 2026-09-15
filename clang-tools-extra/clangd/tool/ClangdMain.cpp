@@ -17,6 +17,7 @@
 #include "IncludeCleaner.h"
 #include "PathMapping.h"
 #include "Protocol.h"
+#include "PseudoModule.h"
 #include "TidyProvider.h"
 #include "Transport.h"
 #include "index/Background.h"
@@ -192,6 +193,20 @@ opt<bool> EnableClangTidy{
     cat(Features),
     desc("Enable clang-tidy diagnostics"),
     init(true),
+};
+
+opt<bool> EnablePseudoParser{
+    "enable-pseudo-parser",
+    cat(Features),
+    desc("Enable pseudo-parser fallback in clangd"),
+    init(true),
+};
+
+opt<bool> UsePseudoParser{
+    "use-pseudo-parser",
+    cat(Features),
+    desc("Disable the Clang AST parser for opened files and use the pseudo-parser exclusively"),
+    init(false),
 };
 
 opt<CodeCompleteOptions::CodeCompletionParse> CodeCompletionParse{
@@ -1060,7 +1075,22 @@ clangd accepts flags on the commandline, and in the CLANGD_FLAGS environment var
                : static_cast<int>(ErrorResultCode::CheckFailed);
   }
 
+  if (UsePseudoParser) {
+    Opts.BackgroundIndex = false;
+    Opts.BuildDynamicSymbolIndex = false;
+  }
+
   FeatureModuleSet ModuleSet = FeatureModuleSet::fromRegistry();
+  auto *Pseudo = ModuleSet.get<PseudoModule>();
+  if (!Pseudo) {
+    auto Mod = std::make_unique<PseudoModule>();
+    Pseudo = Mod.get();
+    ModuleSet.add(std::move(Mod));
+  }
+  if (Pseudo) {
+    Pseudo->setEnabled(EnablePseudoParser);
+    Pseudo->setPseudoOnly(UsePseudoParser);
+  }
   if (ModuleSet.begin() != ModuleSet.end())
     Opts.FeatureModules = &ModuleSet;
 
