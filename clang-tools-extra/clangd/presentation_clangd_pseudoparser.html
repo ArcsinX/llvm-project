@@ -540,12 +540,12 @@
       </p>
     </section>
 
-    <!-- Slide: Single-File Studies 1 & 2 -->
+    <!-- Slide: Study 1: Preprocessor Resilience -->
     <section>
-      <h2>Single-File Studies: Branch Brackets &amp; Member Definitions</h2>
+      <h2>Study 1: Preprocessor Resilience (Branch Brackets)</h2>
       <div class="grid-2" style="font-size:0.65em; margin-top:10px;">
         <div class="card">
-          <h4 style="color:#60a5fa; margin-top:0;">Example 1: Split #ifdef Across Class Head</h4>
+          <h4 style="color:#60a5fa; margin-top:0;">Branch Brackets (#if / #else)</h4>
           <pre><code class="language-cpp">#define USE_V2 1
 #if USE_V2
 class DataService {
@@ -559,61 +559,44 @@ void run() {
     DataService svc; // GTD on 'DataService' -> Line 5
     svc.sync();      // GTD on 'sync' -> Line 10
 }</code></pre>
-          <p><b>❌ Tree-sitter:</b> Competing <code>{</code> across branches breaks grammar &rarr; cascaded <code>(ERROR)</code> nodes &rarr; GTD fails.</p>
-          <p style="color:#34d399;"><b>✅ Clang-Pseudo:</b> <b>Zero heuristics!</b> <code>DirectiveTree</code> prunes <code>#else</code> before parsing. Clean balanced token stream &rarr; GTD succeeds!</p>
+          <p style="color:#94a3b8;"><b>⚠️ Architectural Dilemma:</b> Opening <code>{</code> appears in two competing branches with one closing <code>}</code>. Common in cross-platform code.</p>
         </div>
         <div class="card">
-          <h4 style="color:#34d399; margin-top:0;">Example 2: Out-of-Class Member Definition</h4>
-          <pre><code class="language-cpp">class DataService {
-public:
-    void sync(); // Line 3: Declaration
-};
-void DataService::sync() { // Line 7: Definition
-    /* do sync */
-}
-void run() {
-    DataService svc;
-    svc.sync(); // Line 13: GTD on 'sync' -> Line 7
-}</code></pre>
-          <p><b>❌ Tree-sitter:</b> Coarse identifier queries lack syntactic scope resolution; blindly jumps to in-class declaration.</p>
-          <p style="color:#34d399;"><b>✅ Clang-Pseudo:</b> Scope resolution links definition to declaration: <code>svc.sync()</code> jumps to definition; <code>DataService::sync</code> toggles to decl!</p>
+          <h4 style="color:#34d399; margin-top:0;">Tree-sitter Breakdown vs. DirectiveTree</h4>
+          <p><b>❌ Tree-sitter (Flat AST):</b> Parses <code>#if</code>/<code>#else</code> as inline syntax nodes. Two unclosed <code>{</code> before <code>#else</code> break the LR parser &rarr; cascaded <code>(ERROR)</code> nodes swallow declarations &rarr; <b>GTD FAILS</b>. Regex/indent heuristics cannot know which branch is active.</p>
+          <p style="color:#34d399;"><b>✅ Clang-Pseudo (DirectiveTree):</b> Evaluates <code>#if USE_V2</code> and prunes <code>#else</code> <b>before</b> parsing. Parser receives a perfectly balanced stream &rarr; <b>Zero heuristics! GTD SUCCEEDS!</b></p>
         </div>
       </div>
     </section>
 
-    <!-- Slide: Single-File Studies 3 & 4 -->
+    <!-- Slide: Study 2: ISO Grammar vs. Handcrafted DSL -->
     <section>
-      <h2>Single-File Studies: Scope Disambiguation &amp; Macros</h2>
+      <h2>Study 2: Real ISO Grammar vs. Handcrafted DSL</h2>
       <div class="grid-2" style="font-size:0.65em; margin-top:10px;">
         <div class="card">
-          <h4 style="color:#60a5fa; margin-top:0;">Example 3: Class vs. Constructor</h4>
-          <pre><code class="language-cpp">class Server {
-public:
-    Server(int port); // Line 4: Constructor
-    void start();     // Line 5: Method
+          <h4 style="color:#60a5fa; margin-top:0;">Valid Standard C++20 (ISO N4860)</h4>
+          <pre><code class="language-cpp">template &lt;typename T&gt;
+concept Serializable = requires(T x) {
+    x.serialize();
 };
-void Server::start() { // Line 9: GTD on 'Server' -> Line 2
+
+template &lt;Serializable T&gt;
+class DataPipeline {
+public:
+    void process(T data);
+};
+
+void run() {
+    DataPipeline&lt;int&gt; pipeline; // GTD -> Line 8
+    pipeline.process(42);
 }
-Server::Server(int port) { // Line 14: Constructor def
-}</code></pre>
-          <p><b>❌ Tree-sitter:</b> Both are coarse <code>identifier</code>s; mistakenly jumps to constructor on Line 14.</p>
-          <p style="color:#34d399;"><b>✅ Clang-Pseudo:</b> <code>isTypeContext</code> recognizes <code>::</code> &rarr; knows constructors cannot be types, jumps to Line 2!</p>
+// On template param: GTD on 'Serializable' -> Line 2</code></pre>
+          <p style="color:#94a3b8;"><b>💡 Language Reality:</b> Concepts, requires expressions &amp; constrained template heads are standard C++20 ISO productions.</p>
         </div>
         <div class="card">
-          <h4 style="color:#34d399; margin-top:0;">Example 4: Declaration Macros (No Semicolon)</h4>
-          <pre><code class="language-cpp">#define DECLARE_SERVICE(Name) \
-public: static const char* id() { return #Name; } private:
-
-class AuthManager {
-    DECLARE_SERVICE(AuthManager) // No semicolon!
-public:
-    void authenticate(); // Line 9: Target
-};
-void handleLogin(AuthManager* mgr) {
-    mgr->authenticate(); // Line 13: GTD -> Line 9
-}</code></pre>
-          <p><b>❌ Tree-sitter:</b> Macro breaks class body rules; subsequent symbols dropped &rarr; GTD fails.</p>
-          <p style="color:#34d399;"><b>✅ Clang-Pseudo:</b> GLR wraps unknown macro into Opaque node, preserving class body. Jumps cleanly to Line 9!</p>
+          <h4 style="color:#34d399; margin-top:0;">Handcrafted DSL vs. Official ISO BNF</h4>
+          <p><b>❌ Tree-sitter (grammar.js):</b> Handwritten DSL lacks C++20 <code>type-constraint</code> parameter heads (<code>template &lt;Serializable T&gt;</code>). <code>{ x.serialize(); }</code> inside <code>requires</code> causes shift/reduce clashes with blocks &rarr; <code>(ERROR)</code> nodes drop concept &rarr; <b>GTD FAILS</b>.</p>
+          <p style="color:#34d399;"><b>✅ Clang-Pseudo (cxx.bnf):</b> Generated from official ISO C++ BNF with exact productions (<code>concept-definition</code>, <code>type-constraint</code>). Indexes concept as 1st-class symbol &rarr; <b>GTD SUCCEEDS on both class and concept!</b></p>
         </div>
       </div>
     </section>
