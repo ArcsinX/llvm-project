@@ -210,6 +210,70 @@ TokenStream stripAttributes(const TokenStream &Input) {
       }
     }
 
+    // 4. Standalone macro invocations without semicolon (e.g. DECLARE_SERVICE(Foo), Q_OBJECT)
+    if (Tokens[I].Kind == tok::raw_identifier || Tokens[I].Kind == tok::identifier) {
+      bool PrecededByDeclBoundary = false;
+      if (I == 0) {
+        PrecededByDeclBoundary = true;
+      } else {
+        size_t PrevIdx = I - 1;
+        while (PrevIdx > 0 && Tokens[PrevIdx].Kind == tok::comment)
+          --PrevIdx;
+        auto PK = Tokens[PrevIdx].Kind;
+        if (PK == tok::l_brace || PK == tok::semi || PK == tok::colon ||
+            PK == tok::kw_public || PK == tok::kw_protected ||
+            PK == tok::kw_private)
+          PrecededByDeclBoundary = true;
+      }
+
+      if (PrecededByDeclBoundary) {
+        if (I + 1 < N && Tokens[I + 1].Kind == tok::l_paren) {
+          size_t J = I + 1;
+          int ParenDepth = 0;
+          while (J < N) {
+            if (Tokens[J].Kind == tok::l_paren)
+              ++ParenDepth;
+            else if (Tokens[J].Kind == tok::r_paren) {
+              --ParenDepth;
+              if (ParenDepth == 0)
+                break;
+            }
+            ++J;
+          }
+          if (ParenDepth == 0 && J < N) {
+            size_t NextIdx = J + 1;
+            while (NextIdx < N && Tokens[NextIdx].Kind == tok::comment)
+              ++NextIdx;
+            if (NextIdx < N) {
+              auto NK = Tokens[NextIdx].Kind;
+              bool IsFollowedByDeclBoundary =
+                  (NK == tok::kw_public || NK == tok::kw_protected ||
+                   NK == tok::kw_private || NK == tok::r_brace ||
+                   NK == tok::kw_void || NK == tok::kw_int || NK == tok::kw_bool ||
+                   NK == tok::kw_char || NK == tok::kw_class || NK == tok::kw_struct ||
+                   NK == tok::kw_virtual || NK == tok::kw_static);
+              if (IsFollowedByDeclBoundary) {
+                I = NextIdx;
+                continue;
+              }
+            }
+          }
+        } else {
+          size_t NextIdx = I + 1;
+          while (NextIdx < N && Tokens[NextIdx].Kind == tok::comment)
+            ++NextIdx;
+          if (NextIdx < N) {
+            auto NK = Tokens[NextIdx].Kind;
+            if (NK == tok::kw_public || NK == tok::kw_protected ||
+                NK == tok::kw_private || NK == tok::r_brace) {
+              I = NextIdx;
+              continue;
+            }
+          }
+        }
+      }
+    }
+
     Out.push(Tokens[I]);
     ++I;
   }

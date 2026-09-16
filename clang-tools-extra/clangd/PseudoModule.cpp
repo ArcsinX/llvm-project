@@ -632,8 +632,10 @@ struct LocalDecl {
   Range DeclRange;
   size_t DeclOffset = 0;
   size_t ScopeId = 0;
+  std::string EnclosingClass;
   bool IsParameter = false;
   bool IsMember = false;
+  bool IsDefinition = false;
   PseudoModule::DeclKind Kind = PseudoModule::DeclKind::Unknown;
 };
 
@@ -701,6 +703,8 @@ void buildScopes(const pseudo::ForestNode *N, pseudo::Token::Index End,
       LD.DeclRange = nodeRange(StartTok, EndTok, Out, Code);
       LD.DeclOffset = tokenStartOffset(*NameTok, Out);
       LD.ScopeId = CurrentScopeId;
+      LD.EnclosingClass = std::string(EnclosingClass);
+      LD.IsDefinition = true;
       LD.Kind = PseudoModule::DeclKind::Class;
       Scopes[CurrentScopeId].Decls.push_back(std::move(LD));
     }
@@ -755,6 +759,8 @@ void buildScopes(const pseudo::ForestNode *N, pseudo::Token::Index End,
       LD.DeclRange = nodeRange(StartTok, EndTok, Out, Code);
       LD.DeclOffset = tokenStartOffset(*NsTok, Out);
       LD.ScopeId = CurrentScopeId;
+      LD.EnclosingClass = std::string(EnclosingClass);
+      LD.IsDefinition = true;
       LD.Kind = PseudoModule::DeclKind::Namespace;
       Scopes[CurrentScopeId].Decls.push_back(std::move(LD));
     }
@@ -814,9 +820,12 @@ void buildScopes(const pseudo::ForestNode *N, pseudo::Token::Index End,
       LD.DeclRange = nodeRange(StartTok, EndTok, Out, Code);
       LD.DeclOffset = tokenStartOffset(*NameTok, Out);
       LD.ScopeId = CurrentScopeId;
-      LD.IsMember = !FuncEnclosingClass.empty() || !EnclosingClass.empty();
-      if ((!FuncEnclosingClass.empty() && LD.Name == FuncEnclosingClass) ||
-          (!EnclosingClass.empty() && LD.Name == EnclosingClass)) {
+      LD.EnclosingClass = !FuncEnclosingClass.empty()
+                              ? FuncEnclosingClass
+                              : std::string(EnclosingClass);
+      LD.IsMember = !LD.EnclosingClass.empty();
+      LD.IsDefinition = true;
+      if ((!LD.EnclosingClass.empty() && LD.Name == LD.EnclosingClass)) {
         LD.Kind = PseudoModule::DeclKind::Constructor;
       } else {
         LD.Kind = PseudoModule::DeclKind::Function;
@@ -888,7 +897,9 @@ void buildScopes(const pseudo::ForestNode *N, pseudo::Token::Index End,
       LD.DeclRange = nodeRange(StartTok, EndTok, Out, Code);
       LD.DeclOffset = tokenStartOffset(*NameTok, Out);
       LD.ScopeId = CurrentScopeId;
+      LD.EnclosingClass = std::string(EnclosingClass);
       LD.IsParameter = true;
+      LD.IsDefinition = true;
       LD.Kind = PseudoModule::DeclKind::Parameter;
       Scopes[CurrentScopeId].Decls.push_back(std::move(LD));
     }
@@ -951,6 +962,7 @@ void buildScopes(const pseudo::ForestNode *N, pseudo::Token::Index End,
       LD.DeclRange = nodeRange(StartTok, EndTok, Out, Code);
       LD.DeclOffset = tokenStartOffset(*NameTok, Out);
       LD.ScopeId = CurrentScopeId;
+      LD.EnclosingClass = std::string(EnclosingClass);
       LD.IsMember = (Sym == pseudo::cxx::Symbol::member_declarator) ||
                     !EnclosingClass.empty();
       bool HasLParen = false;
@@ -965,8 +977,10 @@ void buildScopes(const pseudo::ForestNode *N, pseudo::Token::Index End,
           LD.Kind = PseudoModule::DeclKind::Constructor;
         else
           LD.Kind = PseudoModule::DeclKind::Function;
+        LD.IsDefinition = false;
       } else {
         LD.Kind = PseudoModule::DeclKind::Variable;
+        LD.IsDefinition = true;
       }
       Scopes[CurrentScopeId].Decls.push_back(std::move(LD));
     }
@@ -990,6 +1004,8 @@ void buildScopes(const pseudo::ForestNode *N, pseudo::Token::Index End,
       LD.DeclRange = nodeRange(StartTok, EndTok, Out, Code);
       LD.DeclOffset = tokenStartOffset(*NameTok, Out);
       LD.ScopeId = CurrentScopeId;
+      LD.EnclosingClass = std::string(EnclosingClass);
+      LD.IsDefinition = true;
       LD.Kind = PseudoModule::DeclKind::Enum;
       Scopes[CurrentScopeId].Decls.push_back(std::move(LD));
     }
@@ -1009,6 +1025,8 @@ void buildScopes(const pseudo::ForestNode *N, pseudo::Token::Index End,
         Member.DeclRange = Member.NameRange;
         Member.DeclOffset = tokenStartOffset(NodeTokens[I], Out);
         Member.ScopeId = CurrentScopeId;
+        Member.EnclosingClass = std::string(EnclosingClass);
+        Member.IsDefinition = true;
         Member.Kind = PseudoModule::DeclKind::EnumValue;
         Scopes[CurrentScopeId].Decls.push_back(std::move(Member));
         while (I + 1 < NodeTokens.size() &&
@@ -1032,6 +1050,8 @@ void buildScopes(const pseudo::ForestNode *N, pseudo::Token::Index End,
           LD.DeclRange = nodeRange(StartTok, EndTok, Out, Code);
           LD.DeclOffset = tokenStartOffset(IdTok, Out);
           LD.ScopeId = CurrentScopeId;
+          LD.EnclosingClass = std::string(EnclosingClass);
+          LD.IsDefinition = true;
           LD.Kind = PseudoModule::DeclKind::TypeAlias;
           Scopes[CurrentScopeId].Decls.push_back(std::move(LD));
           break;
@@ -1059,6 +1079,8 @@ void buildScopes(const pseudo::ForestNode *N, pseudo::Token::Index End,
       LD.DeclRange = nodeRange(StartTok, EndTok, Out, Code);
       LD.DeclOffset = tokenStartOffset(*NameTok, Out);
       LD.ScopeId = CurrentScopeId;
+      LD.EnclosingClass = std::string(EnclosingClass);
+      LD.IsDefinition = true;
       LD.Kind = PseudoModule::DeclKind::TemplateParam;
       Scopes[CurrentScopeId].Decls.push_back(std::move(LD));
     }
@@ -1083,6 +1105,8 @@ void buildScopes(const pseudo::ForestNode *N, pseudo::Token::Index End,
       LD.DeclRange = nodeRange(StartTok, EndTok, Out, Code);
       LD.DeclOffset = tokenStartOffset(*NameTok, Out);
       LD.ScopeId = CurrentScopeId;
+      LD.EnclosingClass = std::string(EnclosingClass);
+      LD.IsDefinition = false;
       LD.Kind = PseudoModule::DeclKind::TypeAlias;
       Scopes[CurrentScopeId].Decls.push_back(std::move(LD));
     }
@@ -1101,6 +1125,8 @@ void buildScopes(const pseudo::ForestNode *N, pseudo::Token::Index End,
           LD.DeclRange = nodeRange(StartTok, EndTok, Out, Code);
           LD.DeclOffset = tokenStartOffset(IdTok, Out);
           LD.ScopeId = CurrentScopeId;
+          LD.EnclosingClass = std::string(EnclosingClass);
+          LD.IsDefinition = true;
           LD.Kind = PseudoModule::DeclKind::Namespace;
           Scopes[CurrentScopeId].Decls.push_back(std::move(LD));
           break;
@@ -1207,6 +1233,64 @@ const LocalDecl *findAnyDecl(llvm::StringRef Name,
     }
   }
   return FallbackMatch;
+}
+
+static bool isSameEntity(const LocalDecl *A, const LocalDecl *B) {
+  if (!A || !B)
+    return false;
+  if (A == B)
+    return true;
+  if (A->Name != B->Name)
+    return false;
+  if (A->IsMember && B->IsMember)
+    return !A->EnclosingClass.empty() && A->EnclosingClass == B->EnclosingClass;
+  if (!A->IsMember && !B->IsMember)
+    return A->Kind == B->Kind;
+  return false;
+}
+
+static const LocalDecl *
+findMatchingDefinition(const LocalDecl *Decl,
+                       const std::vector<LexicalScope> &Scopes) {
+  if (!Decl || Decl->IsDefinition)
+    return nullptr;
+  for (const auto &S : Scopes) {
+    for (const auto &D : S.Decls) {
+      if (!D.IsDefinition || D.Name != Decl->Name)
+        continue;
+      if (Decl->IsMember) {
+        if (D.IsMember && !Decl->EnclosingClass.empty() &&
+            D.EnclosingClass == Decl->EnclosingClass)
+          return &D;
+      } else {
+        if (!D.IsMember && D.Kind == Decl->Kind)
+          return &D;
+      }
+    }
+  }
+  return nullptr;
+}
+
+static const LocalDecl *
+findMatchingDeclaration(const LocalDecl *Def,
+                        const std::vector<LexicalScope> &Scopes) {
+  if (!Def || !Def->IsDefinition)
+    return nullptr;
+  for (const auto &S : Scopes) {
+    for (const auto &D : S.Decls) {
+      if (D.IsDefinition || D.Name != Def->Name)
+        continue;
+      if (Def->IsMember) {
+        if (D.IsMember && !Def->EnclosingClass.empty() &&
+            D.EnclosingClass == Def->EnclosingClass)
+          return &D;
+      } else {
+        if (!D.IsMember && D.Kind == Def->Kind)
+          return &D;
+      }
+    }
+  }
+  return nullptr;
 }
 
 const pseudo::Token *findTouchedIdentifier(const ParseOutput &Out,
@@ -1707,7 +1791,8 @@ static const LocalDecl *resolveTargetDecl(
     if (T.Kind == tok::comment)
       continue;
     if (!OpTok) {
-      if (T.Kind == tok::period || T.Kind == tok::arrow)
+      if (T.Kind == tok::period || T.Kind == tok::arrow ||
+          T.Kind == tok::coloncolon)
         OpTok = &T;
       else
         break;
@@ -1729,6 +1814,32 @@ static const LocalDecl *resolveTargetDecl(
                 TargetDecl = &D;
                 break;
               }
+            }
+          }
+          if (TargetDecl)
+            break;
+        }
+      }
+    } else if (OpTok->Kind == tok::coloncolon) {
+      for (const auto &CS : Scopes) {
+        if ((CS.Kind == ScopeKind::Class || CS.Kind == ScopeKind::Namespace) &&
+            CS.Name == LhsName) {
+          for (const auto &D : CS.Decls) {
+            if (D.Name == TargetName) {
+              TargetDecl = &D;
+              break;
+            }
+          }
+        }
+        if (TargetDecl)
+          break;
+      }
+      if (!TargetDecl) {
+        for (const auto &S : Scopes) {
+          for (const auto &D : S.Decls) {
+            if (D.Name == TargetName && D.EnclosingClass == LhsName) {
+              TargetDecl = &D;
+              break;
             }
           }
           if (TargetDecl)
@@ -1838,9 +1949,20 @@ PseudoModule::locateSymbolAt(PathRef File, llvm::StringRef Code, Position Pos) {
   if (TargetDecl) {
     LocatedSymbol LS;
     LS.Name = TargetDecl->Name;
-    LS.PreferredDeclaration.uri = URIForFile::canonicalize(File, File);
-    LS.PreferredDeclaration.range = TargetDecl->NameRange;
-    LS.Definition = LS.PreferredDeclaration;
+    auto FileURI = URIForFile::canonicalize(File, File);
+    if (TargetDecl->IsDefinition) {
+      LS.Definition = Location{FileURI, TargetDecl->NameRange};
+      if (const auto *Decl = findMatchingDeclaration(TargetDecl, Scopes))
+        LS.PreferredDeclaration = Location{FileURI, Decl->NameRange};
+      else
+        LS.PreferredDeclaration = *LS.Definition;
+    } else {
+      LS.PreferredDeclaration = Location{FileURI, TargetDecl->NameRange};
+      if (const auto *Def = findMatchingDefinition(TargetDecl, Scopes))
+        LS.Definition = Location{FileURI, Def->NameRange};
+      else
+        LS.Definition = LS.PreferredDeclaration;
+    }
     return std::vector<LocatedSymbol>{std::move(LS)};
   }
 
@@ -2049,18 +2171,37 @@ PseudoModule::findReferences(PathRef File, llvm::StringRef Code, Position Pos,
       }
       const LocalDecl *Resolved =
           lookupDecl(TokScope, TargetName, TokStart, Scopes, Code);
-      if (Resolved && Resolved != TargetDecl)
+      if (Resolved && !isSameEntity(Resolved, TargetDecl))
         continue;
     }
 
     ReferencesResult::Reference Ref;
     Ref.Loc.uri = FileURI;
     Ref.Loc.range = tokenRange(T, *Parsed, Code);
-    if (TargetDecl && Ref.Loc.range == TargetDecl->NameRange)
-      Ref.Attributes =
-          ReferencesResult::Declaration | ReferencesResult::Definition;
-    else
+    if (TargetDecl) {
+      if (Ref.Loc.range == TargetDecl->NameRange) {
+        Ref.Attributes = TargetDecl->IsDefinition
+                             ? (ReferencesResult::Declaration |
+                                ReferencesResult::Definition)
+                             : ReferencesResult::Declaration;
+      } else if (const auto *Matching =
+                     TargetDecl->IsDefinition
+                         ? findMatchingDeclaration(TargetDecl, Scopes)
+                         : findMatchingDefinition(TargetDecl, Scopes)) {
+        if (Ref.Loc.range == Matching->NameRange) {
+          Ref.Attributes = Matching->IsDefinition
+                               ? (ReferencesResult::Declaration |
+                                  ReferencesResult::Definition)
+                               : ReferencesResult::Declaration;
+        } else {
+          Ref.Attributes = 0;
+        }
+      } else {
+        Ref.Attributes = 0;
+      }
+    } else {
       Ref.Attributes = 0;
+    }
 
     Result.References.push_back(std::move(Ref));
     if (Limit > 0 && Result.References.size() >= Limit) {

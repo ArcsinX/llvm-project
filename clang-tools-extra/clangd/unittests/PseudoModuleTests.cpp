@@ -992,6 +992,228 @@ TEST(PseudoModuleTest, DisambiguateTypeAndValueWithSameName) {
   EXPECT_EQ((*LocVal)[0].PreferredDeclaration.range, Code.range("varDecl"));
 }
 
+TEST(PseudoModuleTest, SlideExample2) {
+  PseudoModule Mod;
+  std::string File = testPath("test.cpp");
+  Annotations Code(R"cpp(
+    #define USE_V2 1
+    #if USE_V2
+    class $serviceDecl[[DataService]] {
+    #else
+    class LegacyService {
+    #endif
+    public:
+      void $syncDecl[[sync]]();
+    };
+    void run() {
+      ^DataService svc;
+      svc.^sync();
+    }
+  )cpp");
+  auto Points = Code.points();
+  auto LocSvc = Mod.locateSymbolAt(File, Code.code(), Points[0]);
+  ASSERT_TRUE(bool(LocSvc)) << "Ex2 svc error: " << llvm::toString(LocSvc.takeError());
+  ASSERT_EQ(LocSvc->size(), 1u) << "Ex2 svc size";
+  EXPECT_EQ((*LocSvc)[0].Name, "DataService");
+  EXPECT_EQ((*LocSvc)[0].PreferredDeclaration.range, Code.range("serviceDecl"));
+
+  auto LocSync = Mod.locateSymbolAt(File, Code.code(), Points[1]);
+  ASSERT_TRUE(bool(LocSync)) << "Ex2 sync error: " << llvm::toString(LocSync.takeError());
+  ASSERT_EQ(LocSync->size(), 1u) << "Ex2 sync size";
+  EXPECT_EQ((*LocSync)[0].Name, "sync");
+  EXPECT_EQ((*LocSync)[0].PreferredDeclaration.range, Code.range("syncDecl"));
+}
+
+TEST(PseudoModuleTest, SlideExample3) {
+  PseudoModule Mod;
+  std::string File = testPath("test.cpp");
+  Annotations Code(R"cpp(
+    class $serverDecl[[Server]] {
+    public:
+      Server(int port);
+      void start();
+    };
+    void ^Server::start() {}
+    Server::Server(int port) {}
+  )cpp");
+  auto Loc = Mod.locateSymbolAt(File, Code.code(), Code.point());
+  ASSERT_TRUE(bool(Loc)) << "Ex3 error: " << llvm::toString(Loc.takeError());
+  ASSERT_EQ(Loc->size(), 1u) << "Ex3 size";
+  EXPECT_EQ((*Loc)[0].Name, "Server");
+  EXPECT_EQ((*Loc)[0].PreferredDeclaration.range, Code.range("serverDecl"));
+}
+
+TEST(PseudoModuleTest, SlideExample4) {
+  PseudoModule Mod;
+  std::string File = testPath("test.cpp");
+  Annotations Code(R"cpp(
+    #define DECLARE_SERVICE(Name) \
+    public: static const char* id() { return #Name; } private:
+
+    class AuthManager {
+      DECLARE_SERVICE(AuthManager)
+    public:
+      void $authDecl[[authenticate]]();
+    };
+
+    void handleLogin(AuthManager* mgr) {
+      mgr->^authenticate();
+    }
+  )cpp");
+  auto Syms = Mod.getDocumentSymbols(Code.code());
+  ASSERT_TRUE(bool(Syms)) << llvm::toString(Syms.takeError());
+  ASSERT_EQ(Syms->size(), 2u);
+  EXPECT_EQ((*Syms)[0].name, "AuthManager");
+  ASSERT_EQ((*Syms)[0].children.size(), 1u);
+  EXPECT_EQ((*Syms)[0].children[0].name, "authenticate");
+
+  auto Loc = Mod.locateSymbolAt(File, Code.code(), Code.point());
+  ASSERT_TRUE(bool(Loc)) << "Ex4 error: " << llvm::toString(Loc.takeError());
+  ASSERT_EQ(Loc->size(), 1u) << "Ex4 size";
+  EXPECT_EQ((*Loc)[0].Name, "authenticate");
+  EXPECT_EQ((*Loc)[0].PreferredDeclaration.range, Code.range("authDecl"));
+}
+
+TEST(PseudoModuleTest, DataServiceOutOfClassDefinition) {
+  PseudoModule Mod;
+  std::string File = testPath("test.cpp");
+  Annotations Code(R"cpp(
+    #define USE_V2 1
+    #if USE_V2
+    class $serviceDecl[[DataService]] {
+    #else
+    class LegacyService {
+    #endif
+    public:
+      void $syncDecl[[sync]]();
+    };
+
+    void DataService::$syncDef[[sync]]() {
+      int work = 42;
+    }
+
+    void run() {
+      $svcDecl[[DataService]] svc;
+      svc.$callSync[[sync]]();
+    }
+  )cpp");
+
+  // 1. locateSymbolAt on svc.sync() call
+  Position CallSyncPos = Code.range("callSync").start;
+  auto LocCallSync = Mod.locateSymbolAt(File, Code.code(), CallSyncPos);
+  ASSERT_TRUE(bool(LocCallSync)) << llvm::toString(LocCallSync.takeError());
+  ASSERT_EQ(LocCallSync->size(), 1u);
+  EXPECT_EQ((*LocCallSync)[0].Name, "sync");
+  EXPECT_EQ((*LocCallSync)[0].PreferredDeclaration.range, Code.range("syncDecl"));
+  ASSERT_TRUE((*LocCallSync)[0].Definition.has_value());
+  EXPECT_EQ((*LocCallSync)[0].Definition->range, Code.range("syncDef"));
+
+  // 2. locateSymbolAt on in-class declaration void sync();
+  Position DeclPos = Code.range("syncDecl").start;
+  auto LocDecl = Mod.locateSymbolAt(File, Code.code(), DeclPos);
+  ASSERT_TRUE(bool(LocDecl)) << llvm::toString(LocDecl.takeError());
+  ASSERT_EQ(LocDecl->size(), 1u);
+  EXPECT_EQ((*LocDecl)[0].Name, "sync");
+  EXPECT_EQ((*LocDecl)[0].PreferredDeclaration.range, Code.range("syncDecl"));
+  ASSERT_TRUE((*LocDecl)[0].Definition.has_value());
+  EXPECT_EQ((*LocDecl)[0].Definition->range, Code.range("syncDef"));
+
+  // 3. locateSymbolAt on out-of-class definition void DataService::sync()
+  Position DefPos = Code.range("syncDef").start;
+  auto LocDef = Mod.locateSymbolAt(File, Code.code(), DefPos);
+  ASSERT_TRUE(bool(LocDef)) << llvm::toString(LocDef.takeError());
+  ASSERT_EQ(LocDef->size(), 1u);
+  EXPECT_EQ((*LocDef)[0].Name, "sync");
+  EXPECT_EQ((*LocDef)[0].PreferredDeclaration.range, Code.range("syncDecl"));
+  ASSERT_TRUE((*LocDef)[0].Definition.has_value());
+  EXPECT_EQ((*LocDef)[0].Definition->range, Code.range("syncDef"));
+
+  // 4. Test Go-To-Definition and Go-To-Declaration via ClangdServer / LSP
+  MockFS FS;
+  auto CDB = std::make_unique<MockCompilationDatabase>();
+  FeatureModuleSet Modules;
+  auto Pseudo = std::make_unique<PseudoModule>();
+  auto *PseudoPtr = Pseudo.get();
+  PseudoPtr->setPseudoOnly(true);
+  Modules.add(std::move(Pseudo));
+
+  ClangdServer::Options SvrOpts = ClangdServer::optsForTest();
+  SvrOpts.FeatureModules = &Modules;
+  ClangdServer Server(*CDB, FS, SvrOpts);
+
+  FS.Files[File] = Code.code().str();
+  Server.addDocument(File, Code.code());
+  ASSERT_TRUE(Server.blockUntilIdleForTest());
+
+  // (a) Go-to-Definition on svc.sync() -> should jump to out-of-class definition (syncDef)
+  {
+    TextDocumentPositionParams PosParams;
+    PosParams.textDocument.uri = URIForFile::canonicalize(File, File);
+    PosParams.position = CallSyncPos;
+    std::optional<llvm::Expected<std::vector<Location>>> DefResult;
+    PseudoPtr->onGoToDefinition(
+        PosParams, [&](llvm::Expected<std::vector<Location>> Locs) {
+          DefResult = std::move(Locs);
+        });
+    ASSERT_TRUE(Server.blockUntilIdleForTest());
+    ASSERT_TRUE(DefResult.has_value());
+    ASSERT_TRUE(bool(*DefResult)) << llvm::toString(DefResult->takeError());
+    ASSERT_EQ((*DefResult)->size(), 1u);
+    EXPECT_EQ((*DefResult)->front().range, Code.range("syncDef"));
+  }
+
+  // (b) Go-to-Declaration on svc.sync() -> should jump to in-class declaration (syncDecl)
+  {
+    TextDocumentPositionParams PosParams;
+    PosParams.textDocument.uri = URIForFile::canonicalize(File, File);
+    PosParams.position = CallSyncPos;
+    std::optional<llvm::Expected<std::vector<Location>>> DeclResult;
+    PseudoPtr->onGoToDeclaration(
+        PosParams, [&](llvm::Expected<std::vector<Location>> Locs) {
+          DeclResult = std::move(Locs);
+        });
+    ASSERT_TRUE(Server.blockUntilIdleForTest());
+    ASSERT_TRUE(DeclResult.has_value());
+    ASSERT_TRUE(bool(*DeclResult)) << llvm::toString(DeclResult->takeError());
+    ASSERT_EQ((*DeclResult)->size(), 1u);
+    EXPECT_EQ((*DeclResult)->front().range, Code.range("syncDecl"));
+  }
+
+  // (c) Go-to-Definition while on out-of-class definition (syncDef) -> should toggle to declaration (syncDecl)
+  {
+    TextDocumentPositionParams PosParams;
+    PosParams.textDocument.uri = URIForFile::canonicalize(File, File);
+    PosParams.position = DefPos;
+    std::optional<llvm::Expected<std::vector<Location>>> ToggleResult;
+    PseudoPtr->onGoToDefinition(
+        PosParams, [&](llvm::Expected<std::vector<Location>> Locs) {
+          ToggleResult = std::move(Locs);
+        });
+    ASSERT_TRUE(Server.blockUntilIdleForTest());
+    ASSERT_TRUE(ToggleResult.has_value());
+    ASSERT_TRUE(bool(*ToggleResult)) << llvm::toString(ToggleResult->takeError());
+    ASSERT_EQ((*ToggleResult)->size(), 1u);
+    EXPECT_EQ((*ToggleResult)->front().range, Code.range("syncDecl"));
+  }
+
+  // (d) Go-to-Definition while on in-class declaration (syncDecl) -> should toggle to definition (syncDef)
+  {
+    TextDocumentPositionParams PosParams;
+    PosParams.textDocument.uri = URIForFile::canonicalize(File, File);
+    PosParams.position = DeclPos;
+    std::optional<llvm::Expected<std::vector<Location>>> ToggleResult;
+    PseudoPtr->onGoToDefinition(
+        PosParams, [&](llvm::Expected<std::vector<Location>> Locs) {
+          ToggleResult = std::move(Locs);
+        });
+    ASSERT_TRUE(Server.blockUntilIdleForTest());
+    ASSERT_TRUE(ToggleResult.has_value());
+    ASSERT_TRUE(bool(*ToggleResult)) << llvm::toString(ToggleResult->takeError());
+    ASSERT_EQ((*ToggleResult)->size(), 1u);
+    EXPECT_EQ((*ToggleResult)->front().range, Code.range("syncDef"));
+  }
+}
+
 } // namespace
 } // namespace clangd
 } // namespace clang
