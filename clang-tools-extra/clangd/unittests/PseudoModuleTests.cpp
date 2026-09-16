@@ -690,33 +690,26 @@ TEST(PseudoModuleTest, EndToEndLSPOverriding) {
 
 TEST(PseudoModuleTest, ClangdServerAdjustParseInputsNavigation) {
   PseudoModule Mod;
-  std::string Path = "/Users/usovaanastasia/work/llvm-project/clang-tools-extra/clangd/ClangdServer.cpp";
-  auto FS = llvm::vfs::getRealFileSystem();
-  auto Buf = FS->getBufferForFile(Path);
-  ASSERT_TRUE(Buf && *Buf);
-  llvm::StringRef Code = (*Buf)->getBuffer();
+  std::string Path = testPath("ClangdServer.cpp");
+  Annotations Code(R"cpp(
+    void adjustParseInputs(bool SkipPreambleBuild, const char *File) {
+      auto $def[[HasRequiredModules]] = [File]() {
+        return hasRequiredModules($file_use^File);
+      };
+      if (SkipPreambleBuild || $call^HasRequiredModules())
+        return;
+    }
+  )cpp");
 
-  // Find line of "auto HasRequiredModules = [this, File]() {"
-  size_t HasReqPos = Code.find("SkipPreambleBuild || HasRequiredModules()");
-  ASSERT_NE(HasReqPos, llvm::StringRef::npos);
-  size_t TargetOffset = HasReqPos + std::string("SkipPreambleBuild || ").size() + 2;
-  Position TargetPosition = offsetToPosition(Code, TargetOffset);
-
-  auto Loc = Mod.locateSymbolAt(Path, Code, TargetPosition);
+  auto Loc = Mod.locateSymbolAt(Path, Code.code(), Code.point("call"));
   ASSERT_TRUE(bool(Loc)) << llvm::toString(Loc.takeError());
   EXPECT_EQ(Loc->size(), 1u) << "Loc size is " << Loc->size();
   if (!Loc->empty()) {
     EXPECT_EQ((*Loc)[0].Name, "HasRequiredModules");
+    EXPECT_EQ((*Loc)[0].PreferredDeclaration.range, Code.range("def"));
   }
 
-  // Find "return ModulesManager->hasRequiredModules(File);"
-  size_t FilePos = Code.find("return ModulesManager->hasRequiredModules(File);");
-  ASSERT_NE(FilePos, llvm::StringRef::npos);
-  size_t FileTargetOffset =
-      FilePos + std::string("return ModulesManager->hasRequiredModules(").size();
-  Position FileTargetPos = offsetToPosition(Code, FileTargetOffset);
-
-  auto LocFile = Mod.locateSymbolAt(Path, Code, FileTargetPos);
+  auto LocFile = Mod.locateSymbolAt(Path, Code.code(), Code.point("file_use"));
   ASSERT_TRUE(bool(LocFile)) << llvm::toString(LocFile.takeError());
   EXPECT_EQ(LocFile->size(), 1u) << "LocFile size is " << LocFile->size();
   if (!LocFile->empty()) {
@@ -851,26 +844,54 @@ TEST(PseudoModuleTest, GoToDefinitionAcrossHeadersDirectAndTransitive) {
 }
 
 TEST(PseudoModuleTest, ClangdServerParseInputsAndPathRefFromHeaders) {
-  RealThreadsafeFS TFS;
-  DirectoryBasedGlobalCompilationDatabase::Options Opts(TFS);
-  Opts.CompileCommandsDir = "/Users/usovaanastasia/work/llvm-project/build";
-  DirectoryBasedGlobalCompilationDatabase RealCDB(Opts);
+  MockFS FS;
+  FS.Files[testPath("include/Compiler.h")] = R"cpp(
+    struct ParseInputs {
+      int Version;
+    };
+  )cpp";
+  FS.Files[testPath("include/support/Path.h")] = R"cpp(
+    using PathRef = const char *;
+  )cpp";
+  FS.Files[testPath("include/TUScheduler.h")] = R"cpp(
+    #include "Compiler.h"
+  )cpp";
+  FS.Files[testPath("include/ClangdServer.h")] = R"cpp(
+    #include "support/Path.h"
+    #include "TUScheduler.h"
+
+    class ClangdServer {
+    public:
+      ClangdServer();
+      void adjustParseInputs(ParseInputs &Inputs, PathRef File) const;
+    };
+  )cpp";
+  FS.Files[testPath("sys_include/vector")] = R"cpp(
+    namespace std { template <typename T> class vector {}; }
+  )cpp";
+
+  MockCompilationDatabase CDB(testRoot());
+  CDB.ExtraClangFlags = {"-I" + testPath("include"), "-isystem" + testPath("sys_include")};
 
   PseudoModule Mod;
-  Mod.setCompilationDatabaseForTesting(&RealCDB);
+  Mod.setFSForTesting(&FS);
+  Mod.setCompilationDatabaseForTesting(&CDB);
 
-  std::string Path =
-      "/Users/usovaanastasia/work/llvm-project/clang-tools-extra/clangd/ClangdServer.cpp";
-  auto FS = llvm::vfs::getRealFileSystem();
-  auto Buf = FS->getBufferForFile(Path);
-  ASSERT_TRUE(Buf && *Buf);
-  llvm::StringRef Code = (*Buf)->getBuffer();
+  std::string Path = testPath("ClangdServer.cpp");
+  Annotations Code(R"cpp(
+    #include "ClangdServer.h"
+    #include <vector>
+
+    ClangdServer::ClangdServer() {}
+
+    void ClangdServer::adjustParseInputs(ParseInputs &Inputs, PathRef File) const {}
+  )cpp");
 
   // 1. Jump on #include "ClangdServer.h"
-  size_t IncPos = Code.find("#include \"ClangdServer.h\"");
+  size_t IncPos = Code.code().find("#include \"ClangdServer.h\"");
   ASSERT_NE(IncPos, llvm::StringRef::npos);
-  Position IncPosPoint = offsetToPosition(Code, IncPos + 12);
-  auto LocInc = Mod.locateSymbolAt(Path, Code, IncPosPoint);
+  Position IncPosPoint = offsetToPosition(Code.code(), IncPos + 12);
+  auto LocInc = Mod.locateSymbolAt(Path, Code.code(), IncPosPoint);
   ASSERT_TRUE(bool(LocInc)) << llvm::toString(LocInc.takeError());
   ASSERT_EQ(LocInc->size(), 1u);
   EXPECT_EQ((*LocInc)[0].Name, "ClangdServer.h");
@@ -879,13 +900,13 @@ TEST(PseudoModuleTest, ClangdServerParseInputsAndPathRefFromHeaders) {
 
   // 2. Jump to ParseInputs (declared in Compiler.h, included via TUScheduler.h)
   size_t ParseInputsPos =
-      Code.find("void ClangdServer::adjustParseInputs(ParseInputs &Inputs, PathRef File) const");
+      Code.code().find("void ClangdServer::adjustParseInputs(ParseInputs &Inputs, PathRef File) const");
   ASSERT_NE(ParseInputsPos, llvm::StringRef::npos);
   size_t ParseInputsOffset =
       ParseInputsPos + std::string("void ClangdServer::adjustParseInputs(").size() + 2;
-  Position ParseInputsPosition = offsetToPosition(Code, ParseInputsOffset);
+  Position ParseInputsPosition = offsetToPosition(Code.code(), ParseInputsOffset);
 
-  auto LocParseInputs = Mod.locateSymbolAt(Path, Code, ParseInputsPosition);
+  auto LocParseInputs = Mod.locateSymbolAt(Path, Code.code(), ParseInputsPosition);
   ASSERT_TRUE(bool(LocParseInputs)) << llvm::toString(LocParseInputs.takeError());
   ASSERT_EQ(LocParseInputs->size(), 1u);
   EXPECT_EQ((*LocParseInputs)[0].Name, "ParseInputs");
@@ -898,9 +919,9 @@ TEST(PseudoModuleTest, ClangdServerParseInputsAndPathRefFromHeaders) {
   size_t PathRefOffset =
       ParseInputsPos +
       std::string("void ClangdServer::adjustParseInputs(ParseInputs &Inputs, ").size() + 2;
-  Position PathRefPosition = offsetToPosition(Code, PathRefOffset);
+  Position PathRefPosition = offsetToPosition(Code.code(), PathRefOffset);
 
-  auto LocPathRef = Mod.locateSymbolAt(Path, Code, PathRefPosition);
+  auto LocPathRef = Mod.locateSymbolAt(Path, Code.code(), PathRefPosition);
   ASSERT_TRUE(bool(LocPathRef)) << llvm::toString(LocPathRef.takeError());
   ASSERT_EQ(LocPathRef->size(), 1u);
   EXPECT_EQ((*LocPathRef)[0].Name, "PathRef");
@@ -912,8 +933,8 @@ TEST(PseudoModuleTest, ClangdServerParseInputsAndPathRefFromHeaders) {
   // 4. Jump to ClangdServer class qualifier from adjustParseInputs
   // Should jump to class ClangdServer in ClangdServer.h, NOT to constructor in ClangdServer.cpp!
   size_t ClassQualifierPos = ParseInputsPos + std::string("void ").size() + 2;
-  Position ClassQualifierPoint = offsetToPosition(Code, ClassQualifierPos);
-  auto LocClass = Mod.locateSymbolAt(Path, Code, ClassQualifierPoint);
+  Position ClassQualifierPoint = offsetToPosition(Code.code(), ClassQualifierPos);
+  auto LocClass = Mod.locateSymbolAt(Path, Code.code(), ClassQualifierPoint);
   ASSERT_TRUE(bool(LocClass)) << llvm::toString(LocClass.takeError());
   ASSERT_EQ(LocClass->size(), 1u);
   EXPECT_EQ((*LocClass)[0].Name, "ClangdServer");
@@ -925,10 +946,10 @@ TEST(PseudoModuleTest, ClangdServerParseInputsAndPathRefFromHeaders) {
   // 5. In ClangdServer::ClangdServer:
   // First ClangdServer is class (jumps to ClangdServer.h)
   // Second ClangdServer is constructor definition (jumps to ClangdServer.cpp)
-  size_t CtorPos = Code.find("ClangdServer::ClangdServer(");
+  size_t CtorPos = Code.code().find("ClangdServer::ClangdServer(");
   ASSERT_NE(CtorPos, llvm::StringRef::npos);
-  Position CtorClassPoint = offsetToPosition(Code, CtorPos + 2);
-  auto LocCtorClass = Mod.locateSymbolAt(Path, Code, CtorClassPoint);
+  Position CtorClassPoint = offsetToPosition(Code.code(), CtorPos + 2);
+  auto LocCtorClass = Mod.locateSymbolAt(Path, Code.code(), CtorClassPoint);
   ASSERT_TRUE(bool(LocCtorClass)) << llvm::toString(LocCtorClass.takeError());
   ASSERT_EQ(LocCtorClass->size(), 1u);
   EXPECT_EQ((*LocCtorClass)[0].Name, "ClangdServer");
@@ -938,8 +959,8 @@ TEST(PseudoModuleTest, ClangdServerParseInputsAndPathRefFromHeaders) {
       << (*LocCtorClass)[0].PreferredDeclaration.uri.file().str();
 
   Position CtorFuncPoint =
-      offsetToPosition(Code, CtorPos + std::string("ClangdServer::").size() + 2);
-  auto LocCtorFunc = Mod.locateSymbolAt(Path, Code, CtorFuncPoint);
+      offsetToPosition(Code.code(), CtorPos + std::string("ClangdServer::").size() + 2);
+  auto LocCtorFunc = Mod.locateSymbolAt(Path, Code.code(), CtorFuncPoint);
   ASSERT_TRUE(bool(LocCtorFunc)) << llvm::toString(LocCtorFunc.takeError());
   ASSERT_EQ(LocCtorFunc->size(), 1u);
   EXPECT_EQ((*LocCtorFunc)[0].Name, "ClangdServer");
@@ -949,10 +970,10 @@ TEST(PseudoModuleTest, ClangdServerParseInputsAndPathRefFromHeaders) {
       << (*LocCtorFunc)[0].PreferredDeclaration.uri.file().str();
 
   // 6. Jump on #include <vector>
-  size_t VectorPos = Code.find("#include <vector>");
+  size_t VectorPos = Code.code().find("#include <vector>");
   ASSERT_NE(VectorPos, llvm::StringRef::npos);
-  Position VectorPoint = offsetToPosition(Code, VectorPos + 12);
-  auto LocVector = Mod.locateSymbolAt(Path, Code, VectorPoint);
+  Position VectorPoint = offsetToPosition(Code.code(), VectorPos + 12);
+  auto LocVector = Mod.locateSymbolAt(Path, Code.code(), VectorPoint);
   ASSERT_TRUE(bool(LocVector)) << llvm::toString(LocVector.takeError());
   ASSERT_EQ(LocVector->size(), 1u);
   EXPECT_EQ((*LocVector)[0].Name, "vector");
