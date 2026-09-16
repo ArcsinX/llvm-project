@@ -121,12 +121,13 @@ public:
     TypeAlias,
     Namespace,
     TemplateParam,
+    Concept,
   };
 
   static inline bool isTypeDecl(DeclKind K) {
     return K == DeclKind::Class || K == DeclKind::Enum ||
            K == DeclKind::TypeAlias || K == DeclKind::TemplateParam ||
-           K == DeclKind::Namespace;
+           K == DeclKind::Namespace || K == DeclKind::Concept;
   }
 
   static inline bool isValueDecl(DeclKind K) {

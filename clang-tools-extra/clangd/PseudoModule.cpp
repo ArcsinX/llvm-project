@@ -111,7 +111,8 @@ struct ParseOutput {
 };
 
 std::unique_ptr<ParseOutput> parseCode(llvm::StringRef Code) {
-  clang::LangOptions LangOpts = pseudo::genericLangOpts();
+  clang::LangOptions LangOpts = pseudo::genericLangOpts(
+      clang::Language::CXX, clang::LangStandard::lang_cxx20);
   auto Out = std::make_unique<ParseOutput>();
   Out->CodeStorage = Code.str();
   Out->RawStream = pseudo::lex(Out->CodeStorage, LangOpts);
@@ -1083,6 +1084,29 @@ void buildScopes(const pseudo::ForestNode *N, pseudo::Token::Index End,
       LD.IsDefinition = true;
       LD.Kind = PseudoModule::DeclKind::TemplateParam;
       Scopes[CurrentScopeId].Decls.push_back(std::move(LD));
+    }
+    return;
+  }
+
+  // 9b. Concept definition (concept X = ...;)
+  if (Sym == pseudo::cxx::Symbol::concept_definition) {
+    for (size_t I = 0; I < NodeTokens.size(); ++I) {
+      if (NodeTokens[I].Kind == tok::kw_concept && I + 1 < NodeTokens.size()) {
+        const auto &IdTok = NodeTokens[I + 1];
+        if (IdTok.Kind == tok::raw_identifier || IdTok.Kind == tok::identifier) {
+          LocalDecl LD;
+          LD.Name = getOrigToken(IdTok, Out).text().str();
+          LD.NameRange = tokenRange(IdTok, Out, Code);
+          LD.DeclRange = nodeRange(StartTok, EndTok, Out, Code);
+          LD.DeclOffset = tokenStartOffset(IdTok, Out);
+          LD.ScopeId = CurrentScopeId;
+          LD.EnclosingClass = std::string(EnclosingClass);
+          LD.IsDefinition = true;
+          LD.Kind = PseudoModule::DeclKind::Concept;
+          Scopes[CurrentScopeId].Decls.push_back(std::move(LD));
+          break;
+        }
+      }
     }
     return;
   }

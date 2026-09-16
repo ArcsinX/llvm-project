@@ -1214,6 +1214,90 @@ TEST(PseudoModuleTest, DataServiceOutOfClassDefinition) {
   }
 }
 
+TEST(PseudoModuleTest, TemplateWithRequiresClause) {
+  PseudoModule Mod;
+  std::string File = testPath("test.cpp");
+  Annotations Code(R"cpp(
+    template <typename T>
+    requires (sizeof(T) > 4)
+    class $decl[[DataBuffer]] {
+    public:
+      void $writeDecl[[write]](T data);
+    };
+
+    void run() {
+      $typeUsage[[DataBuffer]]<double> buf;
+      buf.$callWrite[[write]](3.14);
+    }
+  )cpp");
+
+  auto Syms = Mod.getDocumentSymbols(Code.code());
+  ASSERT_TRUE(bool(Syms)) << llvm::toString(Syms.takeError());
+  ASSERT_GE(Syms->size(), 2u);
+  EXPECT_EQ((*Syms)[0].name, "DataBuffer");
+  ASSERT_GE((*Syms)[0].children.size(), 1u);
+  EXPECT_EQ((*Syms)[0].children[0].name, "write");
+
+  // (a) Go-to-Definition on DataBuffer
+  auto Loc1 = Mod.locateSymbolAt(File, Code.code(), Code.range("typeUsage").start);
+  ASSERT_TRUE(bool(Loc1)) << llvm::toString(Loc1.takeError());
+  ASSERT_EQ(Loc1->size(), 1u);
+  EXPECT_EQ((*Loc1)[0].Name, "DataBuffer");
+  EXPECT_EQ((*Loc1)[0].PreferredDeclaration.range, Code.range("decl"));
+
+  // (b) Go-to-Definition on write()
+  auto Loc2 = Mod.locateSymbolAt(File, Code.code(), Code.range("callWrite").start);
+  ASSERT_TRUE(bool(Loc2)) << llvm::toString(Loc2.takeError());
+  ASSERT_EQ(Loc2->size(), 1u);
+  EXPECT_EQ((*Loc2)[0].Name, "write");
+  EXPECT_EQ((*Loc2)[0].PreferredDeclaration.range, Code.range("writeDecl"));
+}
+
+TEST(PseudoModuleTest, ConceptAndConstrainedTemplate) {
+  PseudoModule Mod;
+  std::string File = testPath("test.cpp");
+  Annotations Code(R"cpp(
+    template <typename T>
+    concept $conceptDecl[[Serializable]] = requires(T x) {
+      x.serialize();
+    };
+
+    template <$conceptUsage[[Serializable]] T>
+    class $pipelineDecl[[DataPipeline]] {
+    public:
+      void $processDecl[[process]](T data);
+    };
+
+    void run() {
+      $pipelineUsage[[DataPipeline]]<int> pipeline;
+      pipeline.$callProcess[[process]](42);
+    }
+  )cpp");
+
+  auto Syms = Mod.getDocumentSymbols(Code.code());
+  ASSERT_TRUE(bool(Syms)) << llvm::toString(Syms.takeError());
+  bool FoundPipeline = false;
+  for (const auto &S : *Syms) {
+    if (S.name == "DataPipeline")
+      FoundPipeline = true;
+  }
+  EXPECT_TRUE(FoundPipeline);
+
+  // (a) Go-to-Definition on DataPipeline
+  auto Loc1 = Mod.locateSymbolAt(File, Code.code(), Code.range("pipelineUsage").start);
+  ASSERT_TRUE(bool(Loc1)) << llvm::toString(Loc1.takeError());
+  ASSERT_EQ(Loc1->size(), 1u);
+  EXPECT_EQ((*Loc1)[0].Name, "DataPipeline");
+  EXPECT_EQ((*Loc1)[0].PreferredDeclaration.range, Code.range("pipelineDecl"));
+
+  // (b) Go-to-Definition on concept Serializable
+  auto Loc2 = Mod.locateSymbolAt(File, Code.code(), Code.range("conceptUsage").start);
+  ASSERT_TRUE(bool(Loc2)) << llvm::toString(Loc2.takeError());
+  ASSERT_EQ(Loc2->size(), 1u);
+  EXPECT_EQ((*Loc2)[0].Name, "Serializable");
+  EXPECT_EQ((*Loc2)[0].PreferredDeclaration.range, Code.range("conceptDecl"));
+}
+
 } // namespace
 } // namespace clangd
 } // namespace clang

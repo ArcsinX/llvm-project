@@ -30,8 +30,8 @@
 | **04** | [**Why Did Google Developers Stop Work on It?**](#slide-4) | Disambiguation complexity, shift in priorities & today's AI opportunity | [View Slide 4 ➡](#slide-4) |
 | **05** | [**Why Pseudo-Parser Beats Tree-sitter: IDE Perspective**](#slide-5) | ISO standard BNF, Parse Forest DAG, DirectiveTree & DeclKind BFS | [View Slide 5 ➡](#slide-5) |
 | **06** | [**Why Pseudo-Parser Beats Tree-sitter: AI & LLM Perspective**](#slide-6) | Sub-10ms syntax gating, AST skeletonization & 70x faster agent loops | [View Slide 6 ➡](#slide-6) |
-| **07** | [**Single-File Studies: Branch Brackets & Member Definitions**](#slide-7) | Split `#ifdef` across class head & out-of-class definition resolution | [View Slide 7 ➡](#slide-7) |
-| **08** | [**Single-File Studies: Scope Disambiguation & Macros**](#slide-8) | Class vs constructor disambiguation & declaration-generating macros | [View Slide 8 ➡](#slide-8) |
+| **07** | [**Study 1: Preprocessor Resilience (Branch Brackets)**](#slide-7) | `#if` / `#else` branch brackets natively handled without heuristics | [View Slide 7 ➡](#slide-7) |
+| **08** | [**Study 2: Real ISO Grammar vs. Handcrafted DSL**](#slide-8) | C++20 Concepts & Constrained Templates (`cxx.bnf` vs `grammar.js`) | [View Slide 8 ➡](#slide-8) |
 | **09** | [**The Bracket Dilemma: Preprocessor Branching vs. Unclosed Braces**](#slide-9) | Native DirectiveTree branch pruning vs. Google's unfinished bracket pass | [View Slide 9 ➡](#slide-9) |
 | **10** | [**Summary: Strategic Value & Future Roadmap**](#slide-10) | Filling the missing middle of C++ tooling for humans & AI agents | [View Slide 10 ➡](#slide-10) |
 
@@ -293,11 +293,11 @@ flowchart LR
 
 <a id="slide-7"></a>
 
-> <sub>**SLIDE 07 OF 10** &nbsp;|&nbsp; [◀ Prev: AI Comparison](#slide-6) &nbsp;|&nbsp; [📑 Index](#slide-navigator) &nbsp;|&nbsp; [Next: Single-File Studies 2 ▶](#slide-8)</sub>
+> <sub>**SLIDE 07 OF 10** &nbsp;|&nbsp; [◀ Prev: AI Comparison](#slide-6) &nbsp;|&nbsp; [📑 Index](#slide-navigator) &nbsp;|&nbsp; [Next: Study 2: ISO Grammar ▶](#slide-8)</sub>
 
-# 🧪 Slide 7: Single-File Studies: Branch Brackets & Member Definitions
+# 🧪 Slide 7: Comparative Study 1: Preprocessor Resilience (Branch Brackets)
 
-### Example 1: Split `#ifdef` Across Class Head (Opening Brackets in Branches)
+### C++ Code with Branch Brackets (`#if` / `#else`)
 
 ```cpp
 // Single self-contained file:
@@ -319,44 +319,27 @@ void run() {
 ```
 
 - **🎯 GTD Target**: Line 14 (`DataService`) &rarr; Line 5 | Line 15 (`sync`) &rarr; Line 10
-- **❌ Tree-sitter**: Parses `#if`/`#else` as inline tokens. Competing `{` across branches creates severe bracket mismatch &rarr; cascaded `(ERROR)` nodes swallow declarations &rarr; **GTD FAILS completely**.
-- **✅ Clang-Pseudo**: **Zero brace heuristics needed!** `DirectiveTree` evaluates `#if USE_V2` and prunes the inactive `#else` branch *before* parsing. GLR receives a single, perfectly balanced token stream &rarr; **GTD SUCCEEDS immediately!**
+- **⚠️ The Architectural Dilemma**: Opening braces `{` appear in two competing `#if` / `#else` branches, completed by a single closing `}`. This pattern is ubiquitous in production cross-platform code (e.g. Linux vs Windows, feature toggles).
 
----
+### Technical Comparison
 
-### Example 2: Out-of-Class Member Definition & Declaration Resolution
-
-```cpp
-// Single self-contained file:
-class DataService {
-public:
-    void sync(); // Line 3: In-class declaration
-};
-
-// Out-of-class member definition:
-void DataService::sync() { // Line 7: Definition
-    /* do sync */
-}
-
-void run() {
-    DataService svc;
-    svc.sync(); // <- Line 13: CALL GTD on 'sync'
-}
-```
-
-- **🎯 GTD Target**: Line 13, Col 10 (`sync`) &rarr; Definition: Line 7 (or Declaration: Line 3)
-- **❌ Tree-sitter**: Flat identifier queries lack syntactic scope resolution. Naively jumps to the first text match (in-class declaration) or confuses member call with constructor.
-- **✅ Clang-Pseudo**: `isTypeContext` and scope resolution differentiate qualifiers (`DataService::sync`). Correctly indexes both declaration and definition: `svc.sync()` jumps to definition; `DataService::sync` toggles to declaration!
+| Dimension | Tree-sitter (`grammar.js`) | Clang-Pseudo (`clang-pseudo`) |
+| :--- | :--- | :--- |
+| **Parsing Strategy** | **Flat Single-Buffer AST**: Directives parsed as inline AST nodes | **DirectiveTree Pre-Pass**: Evaluates & prunes inactive branch |
+| **Bracket State** | Sees **two opening `{`** before `#else` &rarr; severe state mismatch | Inactive branch stripped **before** pairing &rarr; **one `{` and one `}`** |
+| **AST Outcome** | Cascaded **`(ERROR)` nodes** swallowing lines 6–16 | **Clean, perfectly balanced** translation unit |
+| **GTD Result** | ❌ **GTD FAILS** (symbols dropped, no heuristic can resolve) | ✅ **GTD SUCCEEDS** (jumps to Line 5 and Line 10 natively) |
+| **Heuristic Reliance** | Cannot be solved by indentation or regex heuristics | **Zero heuristics needed**: 100% native grammar parsing |
 
 <details>
 <summary>🎙️ <b>Presenter Notes & Talking Points</b> (click to expand)</summary>
 
-- **Why DirectiveTree works without heuristics:** In Example 1, Tree-sitter sees two `{` before `#else`, which breaks its LR state stack. Clang-Pseudo never feeds both `{` to the parser; it prunes `#else` first.
-- **Out-of-class definition toggling:** In C++, separating declarations in `.h` and definitions in `.cpp` (or lower in the file) is standard. Clang-Pseudo's scope graph accurately tracks both.
+- **Why heuristics fail on preprocessors:** Without preprocessor evaluation, no editor heuristic (regex, indentation tracking) can know which `#if` branch is active. Tree-sitter attempts to parse both branches simultaneously into the same tree, which fundamentally breaks bracket nesting.
+- **DirectiveTree's Elegance:** Clang-Pseudo decouples preprocessor branch selection from grammar parsing. GLR only ever sees the active code.
 </details>
 
 <div align="right">
-  <sub><a href="#slide-navigator">⬆ Top</a> &nbsp;|&nbsp; <a href="#slide-8">Next: Single-File Studies 2 ➡</a></sub>
+  <sub><a href="#slide-navigator">⬆ Top</a> &nbsp;|&nbsp; <a href="#slide-8">Next: Study 2: ISO Grammar ➡</a></sub>
 </div>
 
 ---
@@ -365,65 +348,52 @@ void run() {
 
 <a id="slide-8"></a>
 
-> <sub>**SLIDE 08 OF 10** &nbsp;|&nbsp; [◀ Prev: Single-File Studies 1](#slide-7) &nbsp;|&nbsp; [📑 Index](#slide-navigator) &nbsp;|&nbsp; [Next: The Bracket Dilemma ▶](#slide-9)</sub>
+> <sub>**SLIDE 08 OF 10** &nbsp;|&nbsp; [◀ Prev: Study 1: Preprocessor](#slide-7) &nbsp;|&nbsp; [📑 Index](#slide-navigator) &nbsp;|&nbsp; [Next: The Bracket Dilemma ▶](#slide-9)</sub>
 
-# 🔍 Slide 8: Single-File Studies: Scope Disambiguation & Macros
+# 📐 Slide 8: Comparative Study 2: ISO Grammar vs. Handcrafted DSL
 
-### Example 3: Qualified Class vs. Constructor Disambiguation
-
-```cpp
-// Single self-contained file:
-class Server {
-public:
-    Server(int port); // Line 4: Constructor declaration
-    void start();     // Line 5: Method declaration
-};
-
-// Method implementation:
-void Server::start() { // <- Line 9: CALL GTD on first 'Server'
-    /* ... */
-}
-
-// Constructor definition:
-Server::Server(int port) { // Line 14: Constructor definition
-    /* ... */
-}
-```
-
-- **🎯 GTD Target**: Line 9, Col 6 (first `Server` in `void Server::start()`) &rarr; Line 2
-- **❌ Tree-sitter**: Both tokens are coarse `identifier`s. Symbol search finds the definition on Line 14 first and **ERRONEOUSLY jumps to the constructor on Line 14!**
-- **✅ Clang-Pseudo**: `isTypeContext` identifies `::` &rarr; Type context. It knows constructors cannot be types, skips Line 14, and jumps accurately to `class Server` on Line 2!
-
----
-
-### Example 4: Declaration-Generating Macros (No Semicolon)
+### Valid Standard C++20 (ISO C++ N4860 Draft)
 
 ```cpp
 // Single self-contained file:
-// Macro without trailing semicolon (like Qt Q_OBJECT / LLVM macros):
-#define DECLARE_SERVICE(Name) \
-public: static const char* id() { return #Name; } private:
-
-class AuthManager {
-    DECLARE_SERVICE(AuthManager) // <- Line 7: No semicolon!
-public:
-    void authenticate();         // Line 9: Target declaration
+template <typename T>
+concept Serializable = requires(T x) {
+    x.serialize();
 };
 
-void handleLogin(AuthManager* mgr) {
-    mgr->authenticate();         // <- Line 13: CALL GTD on 'authenticate'
+template <Serializable T>
+class DataPipeline {
+public:
+    void process(T data);
+};
+
+void run() {
+    DataPipeline<int> pipeline; // <- CALL GTD on 'DataPipeline'
+    pipeline.process(42);
 }
+// In template parameter: CALL GTD on 'Serializable'
 ```
 
-- **🎯 GTD Target**: Line 13, Col 10 (`authenticate`) &rarr; Target: Line 9
-- **❌ Tree-sitter**: Macro without semicolon breaks grammar rules in class body. Corrupts subsequent `public:` and drops `authenticate()` from symbols &rarr; **GTD FAILS**.
-- **✅ Clang-Pseudo**: GLR wraps unknown macro tokens into an Opaque node, preserving class body boundaries. Cleanly indexes `authenticate()` and **jumps to Line 9!**
+- **🎯 GTD Targets**:
+  - Line 14 (`DataPipeline`) &rarr; Line 8 (Class declaration)
+  - Line 7 (`Serializable` in `template <Serializable T>`) &rarr; Line 3 (Concept definition)
+- **💡 Formal Language Reality**: `concept` definitions, `requires` expressions, and constrained template parameter heads (`type-constraint`) are standard ISO C++20 grammar constructs.
+
+### Technical Comparison
+
+| Dimension | Tree-sitter (`grammar.js`) | Clang-Pseudo (`cxx.bnf`) |
+| :--- | :--- | :--- |
+| **Grammar Origin** | Handcrafted JavaScript DSL approximating a subset of C++ | **Compiled directly from official ISO C++20 BNF** |
+| **Concept Declarations** | Missing explicit `concept-definition` rule in older/stable grammar | Native production: `concept-definition := CONCEPT concept-name = constraint-expression ;` |
+| **Constrained Templates** | `template <Serializable T>`: only expects `typename` or `class` &rarr; **syntax error** | Native production: `type-parameter := type-constraint ..._opt IDENTIFIER_opt` |
+| **Requires Expressions** | `{ x.serialize(); }` triggers shift/reduce clash with compound statements | Explicit `requirement-body := { requirement-seq }` rules |
+| **Symbol Resolution** | ❌ **GTD FAILS** (mangles signature, drops concept) | ✅ **GTD SUCCEEDS** (indexes concept & class as 1st-class symbols) |
 
 <details>
 <summary>🎙️ <b>Presenter Notes & Talking Points</b> (click to expand)</summary>
 
-- **Disambiguation without types:** In Example 3, notice that we did not run a type checker. Syntactic context alone (`::` following the identifier in a return type or qualifier position) tells us it is a type/class, not a constructor.
-- **Macro resilience:** Industrial frameworks like Qt, Unreal Engine, and LLVM are full of header macros (`UFUNCTION()`, `Q_OBJECT`, `LLVM_DECLARE_PASS`). Clang-Pseudo handles them without macro expansion.
+- **The DSL Trap:** Tree-sitter's `grammar.js` is maintained by community contributors adding ad-hoc rules as new C++ features appear. But C++20 concepts alter the very head of template declarations (`template <Concept T>`). Without compiler-level grammar productions, the parser misinterprets `Serializable T` as a syntax error.
+- **ISO Conformance:** Clang-Pseudo does not guess what C++ looks like. Its grammar table is generated from the official ISO C++ standard BNF, ensuring complete syntactic fidelity on advanced modern C++.
 </details>
 
 <div align="right">
