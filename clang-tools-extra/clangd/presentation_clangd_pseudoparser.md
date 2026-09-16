@@ -28,8 +28,8 @@
 | **02** | [**The Problem: The Cost of Full Clang ASTs**](#slide-2) | Header preprocessing freezes (3.6s), RAM bloat & fragility | [View Slide 2 ➡](#slide-2) |
 | **03** | [**Origin & Timeline: When Was Clang-Pseudo Introduced?**](#slide-3) | Nov 2021 RFC by Sam McCall & Haojian Wu (Google), Dual-Mode vision | [View Slide 3 ➡](#slide-3) |
 | **04** | [**Why Did Google Developers Stop Work on It?**](#slide-4) | Disambiguation complexity, shift in priorities & today's AI opportunity | [View Slide 4 ➡](#slide-4) |
-| **05** | [**Why Pseudo-Parser Beats Tree-sitter: IDE Perspective**](#slide-5) | ISO standard BNF, Parse Forest DAG, DirectiveTree & DeclKind BFS | [View Slide 5 ➡](#slide-5) |
-| **06** | [**Why Pseudo-Parser Beats Tree-sitter: AI & LLM Perspective**](#slide-6) | Sub-10ms syntax gating, AST skeletonization & 70x faster agent loops | [View Slide 6 ➡](#slide-6) |
+| **05** | [**Why Pseudo-Parser Beats Tree-sitter: IDE Perspective**](#slide-5) | ISO standard BNF, Parse Forest DAG, DirectiveTree & DeclKind taxonomy | [View Slide 5 ➡](#slide-5) |
+| **06** | [**Why Pseudo-Parser Beats Tree-sitter: AI & LLM Perspective**](#slide-6) | Formal ISO validation, lossless RAG skeletonization & ambiguity-aware DAG | [View Slide 6 ➡](#slide-6) |
 | **07** | [**Study 1: Preprocessor Resilience (Branch Brackets)**](#slide-7) | `#if` / `#else` branch brackets natively handled without heuristics | [View Slide 7 ➡](#slide-7) |
 | **08** | [**Study 2: Real ISO Grammar vs. Handcrafted DSL**](#slide-8) | C++20 Concepts & Constrained Templates (`cxx.bnf` vs `grammar.js`) | [View Slide 8 ➡](#slide-8) |
 | **09** | [**The Bracket Dilemma: Preprocessor Branching vs. Unclosed Braces**](#slide-9) | Native DirectiveTree branch pruning vs. Google's unfinished bracket pass | [View Slide 9 ➡](#slide-9) |
@@ -217,7 +217,7 @@ timeline
 | **Grammar Foundation** | Handcrafted JavaScript DSL (`grammar.js`) maintaining a pragmatically simplified subset | **Compiled directly from official ISO C++20 BNF (N4860)** | 📐 Strict standard conformance with official C++ productions |
 | **Ambiguity Handling** | **Eager Guessing**: Forces a single interpretation via static `prec()`. A wrong guess permanently corrupts the tree | **Parse Forest (DAG)**: Retains all valid interpretations; scores them globally using surrounding context | 🎯 Never permanently corrupts valid syntactic alternatives |
 | **Preprocessor Handling** | Parses `#ifdef` as inline AST tokens. Competing brackets across branches yield cascaded `(ERROR)` nodes | **DirectiveTree + Clang Lexer**: Evaluates and prunes branches before parsing; clean ASTs | 🛡️ Immune to `#ifdef` bracket splits in production code |
-| **Declaration Classification** | Coarse node types (`type_identifier`, `identifier`). Cannot distinguish classes from typedefs without fragile queries | Grammar maps directly to **`DeclKind` (Class, Struct, Enum, Typedef, Namespace)** | 🌐 Powers bounded header BFS for instant cross-file Go-To-Definition |
+| **Declaration Classification** | Coarse node types (`type_identifier`, `identifier`). Cannot distinguish classes from typedefs without fragile queries | Grammar maps directly to **`DeclKind` (Class, Struct, Enum, Typedef, Namespace)** | 🏷️ Native, typed declaration classification directly from grammar productions without ad-hoc queries |
 
 <details>
 <summary>🎙️ <b>Presenter Notes & Talking Points</b> (click to expand)</summary>
@@ -244,16 +244,16 @@ timeline
 flowchart LR
     subgraph AI["🧠 Autonomous AI Agent & LLM"]
         A1["Streaming Token Generation"]
-        A2["RAG Prompt Budgeting"]
-        A3["Multi-Step Code Edits"]
+        A2["RAG Prompt Skeletonization"]
+        A3["Symbol & Scope Classification"]
         A4["Monorepo Vector Indexing"]
     end
 
-    subgraph Engine["⚡ Clang-Pseudo Engine (&lt;50ms)"]
-        E1["1. ISO Syntax Gating\n(&lt;10ms validation)"]
-        E2["2. AST Skeletonization\n(Strip bodies, keep types)"]
-        E3["3. 70x Faster Loop\n(50ms vs 3.6s compiler freeze)"]
-        E4["4. DirectiveTree Indexing\n(Clean trees across millions of files)"]
+    subgraph PseudoAdvantage["⚡ Clang-Pseudo Advantage over Tree-sitter"]
+        E1["1. Strict ISO BNF vs Approximate DSL\n(Zero false rejections on valid C++20)"]
+        E2["2. Lossless AST vs Broken Queries\n(Complete types without query breakage)"]
+        E3["3. Typed DeclKind vs Coarse Identifiers\n(Native Class, Struct, Concept taxonomy)"]
+        E4["4. DirectiveTree vs (ERROR) Cascades\n(Clean chunk boundaries across #ifdefs)"]
     end
 
     A1 --> E1
@@ -262,25 +262,25 @@ flowchart LR
     A4 --> E4
 
     style AI fill:#faf5ff,stroke:#9333ea,stroke-width:1.5px
-    style Engine fill:#eff6ff,stroke:#2563eb,stroke-width:1.5px
+    style PseudoAdvantage fill:#eff6ff,stroke:#2563eb,stroke-width:1.5px
 ```
 
-### 4 Strategic Pillars for AI
+### AI & LLM Tooling Comparison Table: Clang-Pseudo vs. Tree-sitter
 
-1. **Formally Correct Syntax Gating (<10ms)**:
-   - For streaming LLM code generation and speculative decoding. Tree-sitter's approximate grammar silently accepts invalid C++ or rejects advanced valid C++ (concepts, requires clauses). Clang-Pseudo provides strict ISO syntax validation in <10ms without headers.
-2. **High-Density AST Skeletonization for RAG**:
-   - LLM context windows are expensive. Clang-Pseudo extracts exact class, template, and function signatures in 50ms while stripping function bodies — packing 10x more repository interface context into prompts with zero compiler setup.
-3. **70x Faster Feedback Loops for Coding Agents**:
-   - Autonomous coding agents (Cursor, Claude Code, Antigravity) make multi-step code edits. Waiting 3.6–10s per edit for AST rebuild stalls agent execution. Clang-Pseudo validates modified scopes in 50ms instead of 3,600ms.
-4. **Clean Monorepo Indexing at Scale**:
-   - Codebases like Chromium or Linux kernel break Tree-sitter with `(ERROR)` nodes on ~20% of files due to complex `#ifdef`s. `DirectiveTree` yields clean, complete parse trees across millions of files, generating reliable semantic chunks for vector search.
+| AI Dimension | Tree-sitter (`tree-sitter-cpp`) | Clang-Pseudo (`clang-pseudo`) | Advantage over Tree-sitter |
+| :--- | :--- | :--- | :--- |
+| **Streaming Syntax Gating** | Handcrafted approximate grammar (`grammar.js`) silently accepts malformed C++ or falsely rejects valid C++20 constructs | **Strict ISO C++ BNF validation**: Generated directly from the standard draft (N4860) | 🛡️ **Formal Verification**: Reliable grammar-constrained decoding without Tree-sitter's false syntax rejections or missed errors |
+| **AST Skeletonization (RAG)** | Approximate grammar misparses templates, nested lambdas, and concepts; fragile S-expression queries drop types | **Lossless signature extraction**: strips bodies while preserving exact ISO types, concepts, and member scopes | 📈 **High-Fidelity Context**: Guarantees complete and uncorrupted type signatures for RAG prompts without query failures |
+| **Symbol & Scope Classification** | Emits coarse, ambiguous node types (`type_identifier`, `identifier`); cannot reliably distinguish classes, concepts, or typedefs | Maps AST nodes directly to formal **`DeclKind` (Class, Struct, Enum, Concept, Namespace)** | 🏷️ **Precise Syntactic Taxonomy**: AI code-editing and refactoring tools receive exact declaration kinds directly from grammar rules |
+| **Monorepo Vector Indexing** | Inlines `#ifdef`s into AST; competing branch brackets trigger cascaded `(ERROR)` nodes across ~20% of files | **DirectiveTree branch pruning**: resolves conditional preprocessor branches cleanly before GLR parsing | 🗃️ **Zero Corrupted Chunks**: Delivers pristine AST chunk boundaries for vector embeddings without Tree-sitter error cascades |
+| **Ambiguity-Aware Reasoning** | Eagerly forces a single parse via static precedence (`prec()`); permanently drops valid alternative parses | **Parse Forest (DAG)** preserves all valid syntactic alternatives until wider context resolves them | 🎯 **Preserved Alternatives**: Retains all valid syntactic interpretations for LLM self-correction rather than lossy eager guesses |
 
 <details>
 <summary>🎙️ <b>Presenter Notes & Talking Points</b> (click to expand)</summary>
 
-- **Why AI needs Clang-Pseudo:** Explain that LLMs don't have access to complete build environments when generating or evaluating code in isolation. Clang-Pseudo gives AI systems compiler-grade C++ grammar awareness without the compiler burden.
-- **Speculative Decoding:** In modern LLM inference, small draft models generate candidate tokens that the large model verifies. Clang-Pseudo can reject syntactically impossible C++ draft sequences before they ever hit the main model.
+- **Formal Grammar vs Community DSL:** Tree-sitter's `grammar.js` is a community approximation that easily falls out of sync with ISO standards, leading to false negatives in grammar-guided generation and RAG.
+- **Precise Symbol Classification:** Tree-sitter treats almost all type names as generic `type_identifier` or `identifier`. Clang-Pseudo's grammar natively classifies nodes into `DeclKind` (Class, Struct, Enum, Concept), giving AI code generation and editing tools reliable syntactic metadata.
+- **Resilient Chunking for Vector Search:** Tree-sitter's error recovery creates massive `(ERROR)` blobs on production code with `#ifdef`s, resulting in corrupted vector embeddings for AI search. Clang-Pseudo eliminates this by pruning inactive branches before parsing.
 </details>
 
 <div align="right">
