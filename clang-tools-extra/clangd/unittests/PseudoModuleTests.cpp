@@ -2688,79 +2688,100 @@ TEST(PseudoModuleTest, RealStringRefMacroClassGTD) {
   EXPECT_TRUE(llvm::StringRef(Loc->front().PreferredDeclaration.uri.file()).ends_with("StringRef.h"));
 }
 
-TEST(PseudoModuleTest, RealClangdServerFileLine359GTD) {
+TEST(PseudoModuleTest, ClangdServerLine359IntegrationGTD) {
+  MockFS FS;
+  auto CDB = std::make_unique<MockCompilationDatabase>();
+
+  std::string StringRefH = testPath("llvm/ADT/StringRef.h");
+  std::string ContextH = testPath("support/Context.h");
+  std::string SourceFile = testPath("ClangdServer.cpp");
+
+  FS.Files[StringRefH] = R"cpp(
+    namespace llvm {
+    class StringRef;
+    class LLVM_GSL_POINTER StringRef {
+    public:
+      StringRef();
+    };
+    }
+  )cpp";
+
+  FS.Files[ContextH] = R"cpp(
+    namespace clang {
+    namespace clangd {
+    class Context {
+    public:
+      static const Context &current();
+      Context clone() const;
+    };
+    }
+    }
+  )cpp";
+
   PseudoModule Mod;
-  std::string Path = "/Users/usovaanastasia/work/llvm-project/clang-tools-extra/clangd/ClangdServer.cpp";
-  auto Buf = llvm::MemoryBuffer::getFile(Path);
-  ASSERT_TRUE(bool(Buf));
-  llvm::StringRef Code = (*Buf)->getBuffer();
+  Mod.setFSForTesting(&FS);
+  Mod.setCompilationDatabaseForTesting(CDB.get());
 
-  // Find "[](llvm::StringRef)"
-  size_t Pos = Code.find("[](llvm::StringRef)");
-  ASSERT_NE(Pos, llvm::StringRef::npos);
-  size_t StrRefPos = Pos + std::string("[](llvm::").size();
-  Position StrRefPosition = offsetToPosition(Code, StrRefPos);
+  Annotations Code(R"cpp(
+    #include "support/Context.h"
+    #include "llvm/ADT/StringRef.h"
+    namespace clang {
+    namespace clangd {
+    namespace config { struct Provider {}; }
+    class ClangdServer {
+      struct Callbacks {};
+      std::function<Context(PathRef)>
+      createConfiguredContextProvider(const config::Provider *Provider,
+                                      Callbacks *Publish) {
+        if (!Provider)
+          return [](llvm::$strRef^StringRef) {
+            return Context::$cur^current().$cln^clone();
+          };
 
-  auto LocStrRef = Mod.locateSymbolAt(Path, Code, StrRefPosition);
-  EXPECT_TRUE(LocStrRef && !LocStrRef->empty()) << (LocStrRef ? "empty" : llvm::toString(LocStrRef.takeError()));
-  if (LocStrRef && !LocStrRef->empty()) {
-    EXPECT_EQ(LocStrRef->front().Name, "StringRef");
-    EXPECT_TRUE(llvm::StringRef(LocStrRef->front().PreferredDeclaration.uri.file()).ends_with("StringRef.h"))
-        << "Got: " << LocStrRef->front().PreferredDeclaration.uri.file();
-  }
+        struct Impl {
+          const config::Provider *$provField^Provider;
+          ClangdServer::Callbacks *$pubField^Publish;
 
-  size_t CurPos = Code.find("current()", Pos);
-  ASSERT_NE(CurPos, llvm::StringRef::npos);
-  Position CurPosition = offsetToPosition(Code, CurPos);
+          Impl(const config::Provider *$provParam^Provider, ClangdServer::Callbacks *$pubParam^Publish)
+              : $provInit^Provider($provArg^Provider), $pubInit^Publish($pubArg^Publish) {}
+        };
+        return Impl(Provider, Publish);
+      }
+    };
+    }
+    }
+  )cpp");
 
-  auto LocCur = Mod.locateSymbolAt(Path, Code, CurPosition);
-  EXPECT_TRUE(LocCur && !LocCur->empty()) << (LocCur ? "empty" : llvm::toString(LocCur.takeError()));
-  if (LocCur && !LocCur->empty()) {
-    EXPECT_EQ(LocCur->front().Name, "current");
-    EXPECT_TRUE(llvm::StringRef(LocCur->front().PreferredDeclaration.uri.file()).ends_with("Context.h"))
-        << "Got: " << LocCur->front().PreferredDeclaration.uri.file();
-  }
+  auto LocStrRef = Mod.locateSymbolAt(SourceFile, Code.code(), Code.point("strRef"));
+  ASSERT_TRUE(LocStrRef && !LocStrRef->empty());
+  EXPECT_EQ(LocStrRef->front().Name, "StringRef");
+  EXPECT_TRUE(llvm::StringRef(LocStrRef->front().PreferredDeclaration.uri.file()).ends_with("StringRef.h"));
 
-  size_t ClonePos = Code.find("clone()", Pos);
-  ASSERT_NE(ClonePos, llvm::StringRef::npos);
-  Position ClonePosition = offsetToPosition(Code, ClonePos);
+  auto LocCur = Mod.locateSymbolAt(SourceFile, Code.code(), Code.point("cur"));
+  ASSERT_TRUE(LocCur && !LocCur->empty());
+  EXPECT_EQ(LocCur->front().Name, "current");
+  EXPECT_TRUE(llvm::StringRef(LocCur->front().PreferredDeclaration.uri.file()).ends_with("Context.h"));
 
-  auto LocClone = Mod.locateSymbolAt(Path, Code, ClonePosition);
-  EXPECT_TRUE(LocClone && !LocClone->empty()) << (LocClone ? "empty" : llvm::toString(LocClone.takeError()));
-  if (LocClone && !LocClone->empty()) {
-    EXPECT_EQ(LocClone->front().Name, "clone");
-    EXPECT_TRUE(llvm::StringRef(LocClone->front().PreferredDeclaration.uri.file()).ends_with("Context.h"))
-        << "Got: " << LocClone->front().PreferredDeclaration.uri.file();
-  }
+  auto LocClone = Mod.locateSymbolAt(SourceFile, Code.code(), Code.point("cln"));
+  ASSERT_TRUE(LocClone && !LocClone->empty());
+  EXPECT_EQ(LocClone->front().Name, "clone");
+  EXPECT_TRUE(llvm::StringRef(LocClone->front().PreferredDeclaration.uri.file()).ends_with("Context.h"));
 
-  // Test Publish(Publish) on line 367 of ClangdServer.cpp
-  // struct Impl {
-  //   const config::Provider *Provider;
-  //   ClangdServer::Callbacks *Publish;
-  //   ...
-  //   Impl(const config::Provider *Provider, ClangdServer::Callbacks *Publish)
-  //       : Provider(Provider), Publish(Publish) {}
-  size_t FieldPubDeclPos = Code.find("ClangdServer::Callbacks *Publish;");
-  ASSERT_NE(FieldPubDeclPos, llvm::StringRef::npos);
-  Position FieldPubDeclPosition = offsetToPosition(Code, FieldPubDeclPos + std::string("ClangdServer::Callbacks *").size());
-
-  size_t ParamPubDeclPos = Code.find("ClangdServer::Callbacks *Publish)", FieldPubDeclPos);
-  ASSERT_NE(ParamPubDeclPos, llvm::StringRef::npos);
-  Position ParamPubDeclPosition = offsetToPosition(Code, ParamPubDeclPos + std::string("ClangdServer::Callbacks *").size());
-
-  size_t InitListPos = Code.find(": Provider(Provider), Publish(Publish)", ParamPubDeclPos);
-  ASSERT_NE(InitListPos, llvm::StringRef::npos);
-
-  size_t FirstPubPos = InitListPos + std::string(": Provider(Provider), ").size();
-  size_t SecondPubPos = InitListPos + std::string(": Provider(Provider), Publish(").size();
-
-  auto LocFirstPub = Mod.locateSymbolAt(Path, Code, offsetToPosition(Code, FirstPubPos));
+  auto LocFirstPub = Mod.locateSymbolAt(SourceFile, Code.code(), Code.point("pubInit"));
   ASSERT_TRUE(LocFirstPub && !LocFirstPub->empty());
-  EXPECT_EQ(LocFirstPub->front().PreferredDeclaration.range.start, FieldPubDeclPosition);
+  EXPECT_EQ(LocFirstPub->front().PreferredDeclaration.range.start, Code.point("pubField"));
 
-  auto LocSecondPub = Mod.locateSymbolAt(Path, Code, offsetToPosition(Code, SecondPubPos));
+  auto LocSecondPub = Mod.locateSymbolAt(SourceFile, Code.code(), Code.point("pubArg"));
   ASSERT_TRUE(LocSecondPub && !LocSecondPub->empty());
-  EXPECT_EQ(LocSecondPub->front().PreferredDeclaration.range.start, ParamPubDeclPosition);
+  EXPECT_EQ(LocSecondPub->front().PreferredDeclaration.range.start, Code.point("pubParam"));
+
+  auto LocFirstProv = Mod.locateSymbolAt(SourceFile, Code.code(), Code.point("provInit"));
+  ASSERT_TRUE(LocFirstProv && !LocFirstProv->empty());
+  EXPECT_EQ(LocFirstProv->front().PreferredDeclaration.range.start, Code.point("provField"));
+
+  auto LocSecondProv = Mod.locateSymbolAt(SourceFile, Code.code(), Code.point("provArg"));
+  ASSERT_TRUE(LocSecondProv && !LocSecondProv->empty());
+  EXPECT_EQ(LocSecondProv->front().PreferredDeclaration.range.start, Code.point("provParam"));
 }
 
 } // namespace
