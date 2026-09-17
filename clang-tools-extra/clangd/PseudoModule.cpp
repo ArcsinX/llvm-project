@@ -2843,10 +2843,18 @@ static ASTNode buildTypeNode(llvm::StringRef TypeStr, Range R) {
   return T;
 }
 
-static std::vector<std::pair<std::string, std::string>>
+struct ExtractedParam {
+  std::string Name;
+  std::string Type;
+  Range ParamRange;
+  Range TypeRange;
+  Range NameRange;
+};
+
+static std::vector<ExtractedParam>
 extractParameters(llvm::ArrayRef<pseudo::Token> Tokens, const ParseOutput &Out,
                   llvm::StringRef Code) {
-  std::vector<std::pair<std::string, std::string>> Params;
+  std::vector<ExtractedParam> Params;
   size_t LParen = Tokens.size();
   for (size_t I = 0; I < Tokens.size(); ++I) {
     if (Tokens[I].Kind == tok::l_paren) {
@@ -2906,16 +2914,23 @@ extractParameters(llvm::ArrayRef<pseudo::Token> Tokens, const ParseOutput &Out,
 
     std::string ParamName;
     std::string ParamType;
+    size_t TypeStartIdx = ParamStart;
+    size_t TypeEndIdx = RealEnd;
+    size_t NameTokIdx = RealEnd;
+
     if (RealEnd == ParamStart + 1) {
       size_t TStart = tokenStartOffset(Tokens[ParamStart], Out);
       size_t TEnd = tokenEndOffset(Tokens[ParamStart], Out);
       if (TStart < TEnd && TEnd <= Code.size())
         ParamType = Code.slice(TStart, TEnd).trim().str();
+      TypeEndIdx = ParamStart + 1;
     } else if (RealEnd > ParamStart + 1) {
       size_t LastIdx = RealEnd - 1;
       if (Tokens[LastIdx].Kind == tok::raw_identifier ||
           Tokens[LastIdx].Kind == tok::identifier) {
         ParamName = getOrigToken(Tokens[LastIdx], Out).text().str();
+        NameTokIdx = LastIdx;
+        TypeEndIdx = LastIdx;
         size_t TStart = tokenStartOffset(Tokens[ParamStart], Out);
         size_t TEnd = tokenStartOffset(Tokens[LastIdx], Out);
         if (TStart < TEnd && TEnd <= Code.size())
@@ -2930,15 +2945,38 @@ extractParameters(llvm::ArrayRef<pseudo::Token> Tokens, const ParseOutput &Out,
 
     if (ParamType.empty())
       ParamType = "int";
-    if (ParamType != "void" || !ParamName.empty())
-      Params.push_back({std::move(ParamName), std::move(ParamType)});
+    if (ParamType != "void" || !ParamName.empty()) {
+      ExtractedParam EP;
+      EP.Name = std::move(ParamName);
+      EP.Type = std::move(ParamType);
+
+      size_t PStartOff = tokenStartOffset(Tokens[ParamStart], Out);
+      size_t PEndOff = tokenEndOffset(Tokens[ParamEnd - 1], Out);
+      EP.ParamRange = Range{offsetToPosition(Code, PStartOff),
+                            offsetToPosition(Code, PEndOff)};
+
+      size_t TStartOff = tokenStartOffset(Tokens[TypeStartIdx], Out);
+      size_t TEndOff = (TypeEndIdx > TypeStartIdx)
+                           ? tokenEndOffset(Tokens[TypeEndIdx - 1], Out)
+                           : PEndOff;
+      EP.TypeRange = Range{offsetToPosition(Code, TStartOff),
+                           offsetToPosition(Code, TEndOff)};
+
+      if (NameTokIdx < RealEnd) {
+        EP.NameRange = tokenRange(Tokens[NameTokIdx], Out, Code);
+      } else {
+        EP.NameRange = EP.ParamRange;
+      }
+
+      Params.push_back(std::move(EP));
+    }
   }
   return Params;
 }
 
 static ASTNode
 buildFunctionProto(llvm::StringRef ReturnType,
-                   llvm::ArrayRef<std::pair<std::string, std::string>> Params,
+                   llvm::ArrayRef<ExtractedParam> Params,
                    Range ProtoRange, Range ReturnTypeRange) {
   ASTNode Proto;
   Proto.role = "type";
@@ -2948,32 +2986,112 @@ buildFunctionProto(llvm::StringRef ReturnType,
   for (size_t I = 0; I < Params.size(); ++I) {
     if (I > 0)
       ParamSummary += ", ";
-    ParamSummary += Params[I].second;
-    if (!Params[I].first.empty()) {
+    ParamSummary += Params[I].Type;
+    if (!Params[I].Name.empty()) {
       ParamSummary += " ";
-      ParamSummary += Params[I].first;
+      ParamSummary += Params[I].Name;
     }
   }
-  Proto.arcana = "QualType '" + ReturnType.str() + " (" + ParamSummary + ")'";
-  Proto.children.push_back(buildTypeNode(ReturnType, ReturnTypeRange));
+  std::string Sig = ReturnType.empty()
+                        ? "(" + ParamSummary + ")"
+                        : ReturnType.str() + " (" + ParamSummary + ")";
+  Proto.arcana = "QualType '" + Sig + "'";
+  if (!ReturnType.empty())
+    Proto.children.push_back(buildTypeNode(ReturnType, ReturnTypeRange));
   for (const auto &P : Params) {
     ASTNode Parm;
     Parm.role = "declaration";
     Parm.kind = "ParmVar";
-    Parm.detail = P.first;
-    Parm.range = ProtoRange;
-    Parm.arcana = "ParmVarDecl " + P.first + " '" + P.second + "'";
-    Parm.children.push_back(buildTypeNode(P.second, ProtoRange));
+    Parm.detail = P.Name.empty() ? "(anonymous)" : P.Name;
+    Parm.range = P.ParamRange;
+    Parm.arcana = "ParmVarDecl " + Parm.detail + " '" + P.Type + "'";
+    Parm.children.push_back(buildTypeNode(P.Type, P.TypeRange));
     Proto.children.push_back(std::move(Parm));
   }
   return Proto;
+}
+
+static bool containsSymbol(const pseudo::ForestNode *N, pseudo::SymbolID Target) {
+  if (!N)
+    return false;
+  if (N->symbol() == Target)
+    return true;
+  if (N->kind() == pseudo::ForestNode::Sequence) {
+    for (const auto *Child : N->elements()) {
+      if (containsSymbol(Child, Target))
+        return true;
+    }
+  } else if (N->kind() == pseudo::ForestNode::Ambiguous) {
+    for (const auto *Alt : N->alternatives()) {
+      if (containsSymbol(Alt, Target))
+        return true;
+    }
+  }
+  return false;
+}
+
+static bool isLikelyFunctionDeclaration(llvm::ArrayRef<pseudo::Token> Tokens,
+                                        size_t LParenIdx,
+                                        bool InsideFunctionBody) {
+  if (LParenIdx >= Tokens.size())
+    return false;
+
+  size_t RParenIdx = LParenIdx + 1;
+  int Depth = 1;
+  while (RParenIdx < Tokens.size() && Depth > 0) {
+    if (Tokens[RParenIdx].Kind == tok::l_paren)
+      ++Depth;
+    else if (Tokens[RParenIdx].Kind == tok::r_paren)
+      --Depth;
+    if (Depth == 0)
+      break;
+    ++RParenIdx;
+  }
+  if (RParenIdx >= Tokens.size() && Depth > 0)
+    return false;
+
+  // Empty parameter list: ()
+  if (RParenIdx == LParenIdx + 1)
+    return !InsideFunctionBody;
+
+  // If any token inside (...) is a literal, member access, call, or operator,
+  // then this is direct-initialization of a variable (constructor arguments)!
+  for (size_t I = LParenIdx + 1; I < RParenIdx; ++I) {
+    auto K = Tokens[I].Kind;
+    if (K == tok::string_literal || K == tok::wide_string_literal ||
+        K == tok::utf8_string_literal || K == tok::utf16_string_literal ||
+        K == tok::utf32_string_literal || K == tok::numeric_constant ||
+        K == tok::char_constant || K == tok::kw_true || K == tok::kw_false ||
+        K == tok::kw_nullptr || K == tok::kw_this || K == tok::period ||
+        K == tok::arrow || K == tok::question || K == tok::plusplus ||
+        K == tok::minusminus || K == tok::exclaim || K == tok::tilde)
+      return false;
+  }
+
+  if (InsideFunctionBody) {
+    bool HasTypeKeywordInParams = false;
+    for (size_t I = LParenIdx + 1; I < RParenIdx; ++I) {
+      auto K = Tokens[I].Kind;
+      if (K == tok::kw_int || K == tok::kw_char || K == tok::kw_bool ||
+          K == tok::kw_void || K == tok::kw_float || K == tok::kw_double ||
+          K == tok::kw_auto) {
+        HasTypeKeywordInParams = true;
+        break;
+      }
+    }
+    if (!HasTypeKeywordInParams)
+      return false;
+  }
+
+  return true;
 }
 
 static void buildASTNodes(const pseudo::ForestNode *N, pseudo::Token::Index End,
                           const ParseOutput &Out, llvm::StringRef Code,
                           std::vector<ASTNode> &Nodes, bool InsideClass = false,
                           llvm::StringRef EnclosingClass = "",
-                          llvm::StringRef DeclaredType = "") {
+                          llvm::StringRef DeclaredType = "",
+                          std::optional<Range> DeclaredTypeRange = std::nullopt) {
   if (!N)
     return;
 
@@ -2981,11 +3099,56 @@ static void buildASTNodes(const pseudo::ForestNode *N, pseudo::Token::Index End,
     auto Alts = N->alternatives();
     if (Alts.empty())
       return;
+    const pseudo::ForestNode *DeclAlt = nullptr;
+    const pseudo::ForestNode *ExprAlt = nullptr;
+    for (const auto *Alt : Alts) {
+      if (containsSymbol(Alt, pseudo::cxx::Symbol::declaration_statement) ||
+          containsSymbol(Alt, pseudo::cxx::Symbol::simple_declaration))
+        DeclAlt = Alt;
+      else if (containsSymbol(Alt, pseudo::cxx::Symbol::expression_statement))
+        ExprAlt = Alt;
+    }
+    if (DeclAlt && ExprAlt) {
+      auto StartTok = N->startTokenIndex();
+      auto NodeTokens =
+          Out.ParseableStream.tokens().slice(StartTok, End - StartTok);
+      size_t SemiIdx = NodeTokens.size();
+      for (size_t I = 0; I < NodeTokens.size(); ++I) {
+        if (NodeTokens[I].Kind == tok::semi) {
+          SemiIdx = I;
+          break;
+        }
+      }
+      bool HasTypeKeyword = false;
+      int IdentCountBeforeParenOrEqual = 0;
+      for (size_t I = 0; I < SemiIdx; ++I) {
+        const auto &T = NodeTokens[I];
+        if (T.Kind == tok::l_paren || T.Kind == tok::equal)
+          break;
+        if (T.Kind == tok::kw_auto || T.Kind == tok::kw_void ||
+            T.Kind == tok::kw_int || T.Kind == tok::kw_char ||
+            T.Kind == tok::kw_bool || T.Kind == tok::kw_float ||
+            T.Kind == tok::kw_double || T.Kind == tok::kw_class ||
+            T.Kind == tok::kw_struct || T.Kind == tok::kw_static ||
+            T.Kind == tok::kw_constexpr || T.Kind == tok::kw_const) {
+          HasTypeKeyword = true;
+        }
+        if (T.Kind == tok::raw_identifier || T.Kind == tok::identifier)
+          ++IdentCountBeforeParenOrEqual;
+      }
+      const pseudo::ForestNode *Chosen =
+          (HasTypeKeyword || IdentCountBeforeParenOrEqual >= 2) ? DeclAlt
+                                                                : ExprAlt;
+      buildASTNodes(Chosen, End, Out, Code, Nodes, InsideClass, EnclosingClass,
+                    DeclaredType, DeclaredTypeRange);
+      return;
+    }
+
     auto It = Out.Disambig.find(N);
     unsigned AltIdx =
         (It != Out.Disambig.end() && It->second < Alts.size()) ? It->second : 0;
     buildASTNodes(Alts[AltIdx], End, Out, Code, Nodes, InsideClass,
-                  EnclosingClass, DeclaredType);
+                  EnclosingClass, DeclaredType, DeclaredTypeRange);
     return;
   }
 
@@ -3046,8 +3209,8 @@ static void buildASTNodes(const pseudo::ForestNode *N, pseudo::Token::Index End,
         NsName += getOrigToken(NodeTokens[I], Out).text().str();
       }
     }
-    NS.detail = NsName;
-    NS.arcana = "NamespaceDecl " + (NsName.empty() ? "(anonymous)" : NsName);
+    NS.detail = NsName.empty() ? "(anonymous)" : NsName;
+    NS.arcana = "NamespaceDecl " + NS.detail;
     NS.range = NRange;
     auto Children = N->elements();
     for (size_t I = 0; I < Children.size(); ++I) {
@@ -3165,11 +3328,34 @@ static void buildASTNodes(const pseudo::ForestNode *N, pseudo::Token::Index End,
     return;
   }
 
+  // Access specifier (public:, protected:, private:)
+  if (Sym == pseudo::cxx::Symbol::access_specifier) {
+    ASTNode AN;
+    AN.role = "declaration";
+    AN.kind = "AccessSpec";
+    AN.detail = "";
+    AN.arcana = "AccessSpecDecl";
+    AN.range = NRange;
+    Nodes.push_back(std::move(AN));
+    return;
+  }
+
   // 4. Function definition
   if (Sym == pseudo::cxx::Symbol::function_definition) {
+    auto Children = N->elements();
+
+    // Scan NodeTokens before '{' or ':' (ctor initializer) to find the parameter list '('
     size_t LParenIdx = NodeTokens.size();
+    int AngleDepth = 0;
     for (size_t I = 0; I < NodeTokens.size(); ++I) {
-      if (NodeTokens[I].Kind == tok::l_paren) {
+      if (NodeTokens[I].Kind == tok::l_brace || NodeTokens[I].Kind == tok::colon)
+        break;
+      if (NodeTokens[I].Kind == tok::less)
+        ++AngleDepth;
+      else if (NodeTokens[I].Kind == tok::greater) {
+        if (AngleDepth > 0)
+          --AngleDepth;
+      } else if (NodeTokens[I].Kind == tok::l_paren && AngleDepth == 0) {
         LParenIdx = I;
         break;
       }
@@ -3179,39 +3365,66 @@ static void buildASTNodes(const pseudo::ForestNode *N, pseudo::Token::Index End,
     const pseudo::Token *NameTok = nullptr;
     const pseudo::Token *FirstNameTok = nullptr;
     if (LParenIdx < NodeTokens.size()) {
-      int EndNameIdx = static_cast<int>(LParenIdx) - 1;
-      while (EndNameIdx >= 0 &&
-             NodeTokens[EndNameIdx].Kind != tok::raw_identifier &&
-             NodeTokens[EndNameIdx].Kind != tok::identifier &&
-             NodeTokens[EndNameIdx].Kind != tok::kw_operator)
-        --EndNameIdx;
-
-      if (EndNameIdx >= 0) {
-        NameTok = &NodeTokens[EndNameIdx];
-        int StartNameIdx = EndNameIdx;
-        while (StartNameIdx > 0) {
-          if (NodeTokens[StartNameIdx - 1].Kind == tok::coloncolon &&
-              StartNameIdx >= 2 &&
-              (NodeTokens[StartNameIdx - 2].Kind == tok::raw_identifier ||
-               NodeTokens[StartNameIdx - 2].Kind == tok::identifier)) {
-            StartNameIdx -= 2;
-          } else if (NodeTokens[StartNameIdx - 1].Kind == tok::tilde) {
-            StartNameIdx -= 1;
-          } else {
-            break;
-          }
+      int OpTokIdx = -1;
+      for (int I = 0; I < static_cast<int>(LParenIdx); ++I) {
+        if (NodeTokens[I].Kind == tok::kw_operator) {
+          OpTokIdx = I;
+          break;
+        }
+      }
+      if (OpTokIdx >= 0) {
+        int EndNameIdx = static_cast<int>(LParenIdx) - 1;
+        while (EndNameIdx > OpTokIdx &&
+               (NodeTokens[EndNameIdx].Kind == tok::r_paren ||
+                NodeTokens[EndNameIdx].Kind == tok::l_paren))
+          --EndNameIdx;
+        int StartNameIdx = OpTokIdx;
+        while (StartNameIdx >= 2 &&
+               NodeTokens[StartNameIdx - 1].Kind == tok::coloncolon &&
+               (NodeTokens[StartNameIdx - 2].Kind == tok::raw_identifier ||
+                NodeTokens[StartNameIdx - 2].Kind == tok::identifier)) {
+          StartNameIdx -= 2;
         }
         FirstNameTok = &NodeTokens[StartNameIdx];
+        NameTok = &NodeTokens[EndNameIdx];
         size_t SOff = tokenStartOffset(*FirstNameTok, Out);
         size_t EOff = tokenEndOffset(*NameTok, Out);
         if (SOff < EOff && EOff <= Code.size())
           FuncName = Code.slice(SOff, EOff).trim().str();
+      } else {
+        int EndNameIdx = static_cast<int>(LParenIdx) - 1;
+        while (EndNameIdx >= 0 &&
+               NodeTokens[EndNameIdx].Kind != tok::raw_identifier &&
+               NodeTokens[EndNameIdx].Kind != tok::identifier)
+          --EndNameIdx;
+
+        if (EndNameIdx >= 0) {
+          NameTok = &NodeTokens[EndNameIdx];
+          int StartNameIdx = EndNameIdx;
+          while (StartNameIdx > 0) {
+            if (NodeTokens[StartNameIdx - 1].Kind == tok::coloncolon &&
+                StartNameIdx >= 2 &&
+                (NodeTokens[StartNameIdx - 2].Kind == tok::raw_identifier ||
+                 NodeTokens[StartNameIdx - 2].Kind == tok::identifier)) {
+              StartNameIdx -= 2;
+            } else if (NodeTokens[StartNameIdx - 1].Kind == tok::tilde) {
+              StartNameIdx -= 1;
+            } else {
+              break;
+            }
+          }
+          FirstNameTok = &NodeTokens[StartNameIdx];
+          size_t SOff = tokenStartOffset(*FirstNameTok, Out);
+          size_t EOff = tokenEndOffset(*NameTok, Out);
+          if (SOff < EOff && EOff <= Code.size())
+            FuncName = Code.slice(SOff, EOff).trim().str();
+        }
       }
     }
 
     std::string ReturnType = "void";
     Range ReturnTypeRange = NRange;
-    if (FirstNameTok) {
+    if (FirstNameTok && FirstNameTok > NodeTokens.data()) {
       size_t TStart = tokenStartOffset(NodeTokens.front(), Out);
       size_t TEnd = tokenStartOffset(*FirstNameTok, Out);
       if (TStart < TEnd && TEnd <= Code.size()) {
@@ -3238,6 +3451,8 @@ static void buildASTNodes(const pseudo::ForestNode *N, pseudo::Token::Index End,
         if (FIdx > StartTok)
           ReturnTypeRange = nodeRange(StartTok, FIdx, Out, Code);
       }
+    } else {
+      ReturnType = "";
     }
 
     if (ReturnType == "auto") {
@@ -3289,14 +3504,70 @@ static void buildASTNodes(const pseudo::ForestNode *N, pseudo::Token::Index End,
       Kind = "CXXMethod";
       Detail = FuncName.substr(FuncName.rfind("::") + 2);
     }
+
+    // Check for operator overload: operator(), operator[], operator=, conversion operator
+    if (FuncName.find("operator") != std::string::npos) {
+      size_t OpPos = FuncName.find("operator");
+      std::string AfterOp = FuncName.substr(OpPos + 8);
+      std::string AfterTrimmed = llvm::StringRef(AfterOp).trim().str();
+      if (!AfterTrimmed.empty() && AfterTrimmed.front() != '(' &&
+          AfterTrimmed.front() != '[' && AfterTrimmed.front() != '=' &&
+          AfterTrimmed.front() != '!' && AfterTrimmed.front() != '+' &&
+          AfterTrimmed.front() != '-' && AfterTrimmed.front() != '*' &&
+          AfterTrimmed.front() != '<' && AfterTrimmed.front() != '>') {
+        Kind = "CXXConversion";
+        std::string ConvType = AfterTrimmed;
+        if (ConvType.rfind("::") != std::string::npos)
+          ConvType = ConvType.substr(ConvType.rfind("::") + 2);
+        Detail = "operator " + ConvType;
+      } else {
+        if (AfterTrimmed.empty())
+          Detail = "operator()";
+        else
+          Detail = "operator" + AfterTrimmed;
+      }
+    }
+
+    // Check for constructor / destructor
     if (llvm::StringRef(Detail).starts_with("~")) {
       Kind = "CXXDestructor";
       Detail = "";
+    } else if (FuncName.find("::") != std::string::npos) {
+      std::string Qualifier = FuncName.substr(0, FuncName.rfind("::"));
+      std::string ClassPart =
+          Qualifier.substr(Qualifier.rfind("::") == std::string::npos
+                               ? 0
+                               : Qualifier.rfind("::") + 2);
+      if (ClassPart == Detail) {
+        Kind = "CXXConstructor";
+        Detail = "";
+      }
     } else if (InsideClass && Detail == EnclosingClass) {
       Kind = "CXXConstructor";
       Detail = "";
-    } else if (InsideClass) {
+    } else if (InsideClass && Kind != "CXXConversion") {
       Kind = "CXXMethod";
+    }
+
+    if (Kind == "CXXConstructor" || Kind == "CXXDestructor") {
+      ReturnType = "";
+    } else if (Kind == "CXXConversion") {
+      size_t OpPos = FuncName.find("operator");
+      if (OpPos != std::string::npos) {
+        std::string AfterOp = FuncName.substr(OpPos + 8);
+        ReturnType = llvm::StringRef(AfterOp).trim().str();
+      }
+      int OpTokIdx = -1;
+      for (size_t I = 0; I < LParenIdx; ++I) {
+        if (NodeTokens[I].Kind == tok::kw_operator) {
+          OpTokIdx = static_cast<int>(I);
+          break;
+        }
+      }
+      if (OpTokIdx >= 0 && LParenIdx > static_cast<size_t>(OpTokIdx + 1)) {
+        ReturnTypeRange =
+            nodeRange(StartTok + OpTokIdx + 1, StartTok + LParenIdx, Out, Code);
+      }
     }
 
     ASTNode FN;
@@ -3309,14 +3580,13 @@ static void buildASTNodes(const pseudo::ForestNode *N, pseudo::Token::Index End,
     FN.children.push_back(
         buildFunctionProto(ReturnType, Params, ProtoRange, ReturnTypeRange));
 
-    auto Children = N->elements();
     for (size_t I = 0; I < Children.size(); ++I) {
       if (Children[I]->symbol() == pseudo::cxx::Symbol::function_body ||
           Children[I]->symbol() == pseudo::cxx::Symbol::compound_statement) {
         pseudo::Token::Index ChildEnd =
             (I + 1 == Children.size()) ? End : Children[I + 1]->startTokenIndex();
-        buildASTNodes(Children[I], ChildEnd, Out, Code, FN.children, InsideClass,
-                      EnclosingClass, DeclaredType);
+        buildASTNodes(Children[I], ChildEnd, Out, Code, FN.children,
+                      /*InsideClass=*/false, /*EnclosingClass=*/"");
       }
     }
     Nodes.push_back(std::move(FN));
@@ -3326,12 +3596,14 @@ static void buildASTNodes(const pseudo::ForestNode *N, pseudo::Token::Index End,
   // 5. Simple declaration
   if (Sym == pseudo::cxx::Symbol::simple_declaration ||
       Sym == pseudo::cxx::Symbol::member_declaration) {
-    bool HasClassOrEnum = false;
     auto Children = N->elements();
+
+    // Check if decl-specifier-seq contains a class, struct, union, or enum definition
+    bool HasClassOrEnumDef = false;
     for (size_t I = 0; I < Children.size(); ++I) {
-      if (Children[I]->symbol() == pseudo::cxx::Symbol::class_specifier ||
-          Children[I]->symbol() == pseudo::cxx::Symbol::enum_specifier) {
-        HasClassOrEnum = true;
+      if (containsSymbol(Children[I], pseudo::cxx::Symbol::class_specifier) ||
+          containsSymbol(Children[I], pseudo::cxx::Symbol::enum_specifier)) {
+        HasClassOrEnumDef = true;
         pseudo::Token::Index ChildEnd =
             (I + 1 == Children.size()) ? End
                                        : Children[I + 1]->startTokenIndex();
@@ -3339,10 +3611,56 @@ static void buildASTNodes(const pseudo::ForestNode *N, pseudo::Token::Index End,
                       EnclosingClass, DeclaredType);
       }
     }
-    if (HasClassOrEnum)
+
+    // Check if there is an init-declarator-list (e.g. variables declared)
+    const pseudo::ForestNode *InitDeclList = nullptr;
+    for (size_t I = 0; I < Children.size(); ++I) {
+      if (Children[I]->symbol() == pseudo::cxx::Symbol::init_declarator_list ||
+          Children[I]->symbol() == pseudo::cxx::Symbol::member_declarator_list) {
+        InitDeclList = Children[I];
+        break;
+      }
+    }
+
+    // If it's a class/struct/enum definition without declarators (e.g. struct Foo { ... };),
+    // then we are done! No variable should be created.
+    if (HasClassOrEnumDef && !InitDeclList)
       return;
 
+    // Check if it's a forward declaration (e.g. struct Foo; or class Bar;)
+    if (!InitDeclList && !HasClassOrEnumDef) {
+      bool HasElaboratedType = false;
+      for (size_t I = 0; I < Children.size(); ++I) {
+        if (containsSymbol(Children[I],
+                           pseudo::cxx::Symbol::elaborated_type_specifier)) {
+          HasElaboratedType = true;
+          break;
+        }
+      }
+      if (HasElaboratedType) {
+        std::string FwdName;
+        for (const auto &T : NodeTokens) {
+          if (T.Kind == tok::semi)
+            break;
+          if (T.Kind == tok::raw_identifier || T.Kind == tok::identifier)
+            FwdName = getOrigToken(T, Out).text().str();
+        }
+        if (!FwdName.empty()) {
+          ASTNode CR;
+          CR.role = "declaration";
+          CR.kind = "CXXRecord";
+          CR.detail = FwdName;
+          CR.arcana = "CXXRecordDecl " + FwdName;
+          CR.range = NRange;
+          Nodes.push_back(std::move(CR));
+          return;
+        }
+      }
+    }
+
+    // Extract the declared type from decl-specifier-seq (Children[0])
     std::string ExtractedType;
+    std::optional<Range> ExtractedTypeRange;
     if (Children.size() >= 2 &&
         Children[1]->startTokenIndex() > Children[0]->startTokenIndex() &&
         Children[1]->startTokenIndex() <= Out.ParseableStream.tokens().size()) {
@@ -3350,8 +3668,10 @@ static void buildASTNodes(const pseudo::ForestNode *N, pseudo::Token::Index End,
       size_t S1 = Children[1]->startTokenIndex();
       size_t OffStart = tokenStartOffset(Out.ParseableStream.tokens()[S0], Out);
       size_t OffEnd = tokenEndOffset(Out.ParseableStream.tokens()[S1 - 1], Out);
-      if (OffStart < OffEnd && OffEnd <= Code.size())
+      if (OffStart < OffEnd && OffEnd <= Code.size()) {
         ExtractedType = Code.slice(OffStart, OffEnd).trim().str();
+        ExtractedTypeRange = nodeRange(S0, S1, Out, Code);
+      }
     }
     if (ExtractedType.empty()) {
       size_t FirstIdentIdx = NodeTokens.size();
@@ -3367,6 +3687,8 @@ static void buildASTNodes(const pseudo::ForestNode *N, pseudo::Token::Index End,
       }
       if (FirstIdentIdx < NodeTokens.size()) {
         ExtractedType = getOrigToken(NodeTokens[FirstIdentIdx], Out).text().str();
+        ExtractedTypeRange =
+            nodeRange(StartTok, StartTok + FirstIdentIdx + 1, Out, Code);
       }
     }
     if (ExtractedType.empty())
@@ -3374,13 +3696,17 @@ static void buildASTNodes(const pseudo::ForestNode *N, pseudo::Token::Index End,
 
     size_t BeforeCount = Nodes.size();
     for (size_t I = 0; I < Children.size(); ++I) {
+      if (Children[I]->symbol() == pseudo::cxx::Symbol::decl_specifier_seq)
+        continue;
       pseudo::Token::Index ChildEnd =
           (I + 1 == Children.size()) ? End : Children[I + 1]->startTokenIndex();
-      if (Children[I]->symbol() != pseudo::cxx::Symbol::decl_specifier_seq)
-        buildASTNodes(Children[I], ChildEnd, Out, Code, Nodes, InsideClass,
-                      EnclosingClass, ExtractedType);
+      buildASTNodes(Children[I], ChildEnd, Out, Code, Nodes, InsideClass,
+                    EnclosingClass, ExtractedType, ExtractedTypeRange);
     }
     if (Nodes.size() > BeforeCount)
+      return;
+
+    if (HasClassOrEnumDef)
       return;
 
     // Fallback: parse as single variable or function prototype
@@ -3403,32 +3729,88 @@ static void buildASTNodes(const pseudo::ForestNode *N, pseudo::Token::Index End,
             NodeTokens[TypeStartTok].Kind == tok::kw_friend))
       ++TypeStartTok;
 
+    bool HasTypeKeyword = (TypeStartTok > 0);
+    int IdentCountBeforeParenOrEqual = 0;
+    for (size_t I = TypeStartTok; I < SemiIdx; ++I) {
+      if (NodeTokens[I].Kind == tok::l_paren || NodeTokens[I].Kind == tok::equal)
+        break;
+      if (NodeTokens[I].Kind == tok::kw_auto || NodeTokens[I].Kind == tok::kw_void ||
+          NodeTokens[I].Kind == tok::kw_int || NodeTokens[I].Kind == tok::kw_char ||
+          NodeTokens[I].Kind == tok::kw_bool || NodeTokens[I].Kind == tok::kw_float ||
+          NodeTokens[I].Kind == tok::kw_double || NodeTokens[I].Kind == tok::kw_class ||
+          NodeTokens[I].Kind == tok::kw_struct) {
+        HasTypeKeyword = true;
+      }
+      if (NodeTokens[I].Kind == tok::raw_identifier ||
+          NodeTokens[I].Kind == tok::identifier)
+        ++IdentCountBeforeParenOrEqual;
+    }
+
     size_t NameTokIdx = SemiIdx;
     for (size_t I = TypeStartTok; I < SemiIdx; ++I) {
       if (NodeTokens[I].Kind == tok::raw_identifier ||
           NodeTokens[I].Kind == tok::identifier) {
         NameTokIdx = I;
-        break;
       }
+      if (NodeTokens[I].Kind == tok::l_paren || NodeTokens[I].Kind == tok::equal)
+        break;
     }
 
     if (NameTokIdx < SemiIdx) {
       std::string VarName =
           getOrigToken(NodeTokens[NameTokIdx], Out).text().str();
+
+      // If no type keyword and only 1 identifier before '(', it's a function call expression!
+      if (!HasTypeKeyword && IdentCountBeforeParenOrEqual <= 1 &&
+          NameTokIdx + 1 < SemiIdx && NodeTokens[NameTokIdx + 1].Kind == tok::l_paren) {
+        ASTNode CallNode;
+        CallNode.role = "expression";
+        CallNode.kind = "Call";
+        CallNode.arcana = "CallExpr";
+        CallNode.range = NRange;
+        ASTNode Callee;
+        Callee.role = "expression";
+        Callee.kind = "DeclRef";
+        Callee.detail = VarName;
+        Callee.arcana = "DeclRefExpr '" + VarName + "'";
+        Callee.range = tokenRange(NodeTokens[NameTokIdx], Out, Code);
+        CallNode.children.push_back(std::move(Callee));
+        Nodes.push_back(std::move(CallNode));
+        return;
+      }
+
       bool IsFuncProto = false;
       if (NameTokIdx + 1 < SemiIdx &&
           NodeTokens[NameTokIdx + 1].Kind == tok::l_paren) {
-        IsFuncProto = true;
+        IsFuncProto = isLikelyFunctionDeclaration(
+            NodeTokens, NameTokIdx + 1, /*InsideFunctionBody=*/!InsideClass);
       }
 
       if (IsFuncProto) {
         auto Params = extractParameters(NodeTokens, Out, Code);
         std::string Kind = InsideClass ? "CXXMethod" : "Function";
+        std::string Detail = VarName;
+        if (llvm::StringRef(Detail).starts_with("~")) {
+          Kind = "CXXDestructor";
+          Detail = "";
+        } else if (InsideClass && Detail == EnclosingClass) {
+          Kind = "CXXConstructor";
+          Detail = "";
+        } else if (llvm::StringRef(Detail).starts_with("operator") &&
+                   Detail != "operator()") {
+          Kind = "CXXConversion";
+        }
+        if (Kind == "CXXConstructor" || Kind == "CXXDestructor") {
+          ExtractedType = "";
+        } else if (Kind == "CXXConversion") {
+          if (llvm::StringRef(Detail).starts_with("operator "))
+            ExtractedType = Detail.substr(strlen("operator "));
+        }
         ASTNode FD;
         FD.role = "declaration";
         FD.kind = Kind;
-        FD.detail = VarName;
-        FD.arcana = Kind + "Decl " + VarName;
+        FD.detail = Detail;
+        FD.arcana = Kind + "Decl " + Detail;
         FD.range = NRange;
         FD.children.push_back(
             buildFunctionProto(ExtractedType, Params, NRange, NRange));
@@ -3450,7 +3832,7 @@ static void buildASTNodes(const pseudo::ForestNode *N, pseudo::Token::Index End,
                                        : Children[I + 1]->startTokenIndex();
         if (Children[I]->symbol() != pseudo::cxx::Symbol::decl_specifier_seq)
           buildASTNodes(Children[I], ChildEnd, Out, Code, VN.children,
-                        InsideClass, EnclosingClass, DeclaredType);
+                        /*InsideClass=*/false, EnclosingClass, DeclaredType);
       }
       Nodes.push_back(std::move(VN));
       return;
@@ -3462,13 +3844,13 @@ static void buildASTNodes(const pseudo::ForestNode *N, pseudo::Token::Index End,
   if (Sym == pseudo::cxx::Symbol::init_declarator ||
       Sym == pseudo::cxx::Symbol::member_declarator) {
     const pseudo::Token *NameTok = nullptr;
-    bool HasLParen = false;
+    size_t LParenIdx = NodeTokens.size();
     for (size_t I = 0; I < NodeTokens.size(); ++I) {
       if (NodeTokens[I].Kind == tok::semi || NodeTokens[I].Kind == tok::equal ||
           NodeTokens[I].Kind == tok::colon || NodeTokens[I].Kind == tok::l_brace)
         break;
       if (NodeTokens[I].Kind == tok::l_paren) {
-        HasLParen = true;
+        LParenIdx = I;
         break;
       }
       if (NodeTokens[I].Kind == tok::raw_identifier ||
@@ -3491,17 +3873,41 @@ static void buildASTNodes(const pseudo::ForestNode *N, pseudo::Token::Index End,
           EffectiveType += " &&";
       }
 
-      if (HasLParen) {
+      bool IsFunc =
+          (LParenIdx < NodeTokens.size()) &&
+          isLikelyFunctionDeclaration(NodeTokens, LParenIdx,
+                                      /*InsideFunctionBody=*/!InsideClass);
+      if (IsFunc) {
         auto Params = extractParameters(NodeTokens, Out, Code);
         std::string Kind = InsideClass ? "CXXMethod" : "Function";
+        std::string Detail = VarName;
+        if (llvm::StringRef(Detail).starts_with("~")) {
+          Kind = "CXXDestructor";
+          Detail = "";
+        } else if (InsideClass && Detail == EnclosingClass) {
+          Kind = "CXXConstructor";
+          Detail = "";
+        } else if (llvm::StringRef(Detail).starts_with("operator") &&
+                   Detail != "operator()") {
+          Kind = "CXXConversion";
+        }
+        if (Kind == "CXXConstructor" || Kind == "CXXDestructor") {
+          EffectiveType = "";
+        } else if (Kind == "CXXConversion") {
+          if (llvm::StringRef(Detail).starts_with("operator "))
+            EffectiveType = Detail.substr(strlen("operator "));
+        }
         ASTNode FD;
         FD.role = "declaration";
         FD.kind = Kind;
-        FD.detail = VarName;
-        FD.arcana = Kind + "Decl " + VarName;
+        FD.detail = Detail;
+        FD.arcana = Kind + "Decl " + Detail;
         FD.range = NRange;
+        if (DeclaredTypeRange && FD.range)
+          FD.range->start = DeclaredTypeRange->start;
+        Range ReturnTypeRange = DeclaredTypeRange.value_or(NRange);
         FD.children.push_back(
-            buildFunctionProto(EffectiveType, Params, NRange, NRange));
+            buildFunctionProto(EffectiveType, Params, NRange, ReturnTypeRange));
         Nodes.push_back(std::move(FD));
         return;
       }
@@ -3511,8 +3917,11 @@ static void buildASTNodes(const pseudo::ForestNode *N, pseudo::Token::Index End,
       VN.kind = InsideClass ? "Field" : "Var";
       VN.detail = VarName;
       VN.range = NRange;
+      if (DeclaredTypeRange && VN.range)
+        VN.range->start = DeclaredTypeRange->start;
       VN.arcana = VN.kind + "Decl " + VarName + " '" + EffectiveType + "'";
-      VN.children.push_back(buildTypeNode(EffectiveType, NRange));
+      VN.children.push_back(
+          buildTypeNode(EffectiveType, DeclaredTypeRange.value_or(NRange)));
 
       auto Children = N->elements();
       for (size_t I = 0; I < Children.size(); ++I) {
@@ -3522,7 +3931,7 @@ static void buildASTNodes(const pseudo::ForestNode *N, pseudo::Token::Index End,
         if (Children[I]->symbol() != pseudo::cxx::Symbol::declarator &&
             Children[I]->symbol() != pseudo::cxx::Symbol::noptr_declarator) {
           buildASTNodes(Children[I], ChildEnd, Out, Code, VN.children,
-                        InsideClass, EnclosingClass, DeclaredType);
+                        /*InsideClass=*/false, EnclosingClass, DeclaredType);
         }
       }
       Nodes.push_back(std::move(VN));
@@ -3534,16 +3943,46 @@ static void buildASTNodes(const pseudo::ForestNode *N, pseudo::Token::Index End,
   // 6. Parameter declaration
   if (Sym == pseudo::cxx::Symbol::parameter_declaration) {
     auto Params = extractParameters(NodeTokens, Out, Code);
-    for (const auto &P : Params) {
-      ASTNode Parm;
-      Parm.role = "declaration";
-      Parm.kind = "ParmVar";
-      Parm.detail = P.first;
-      Parm.range = NRange;
-      Parm.arcana = "ParmVarDecl " + P.first + " '" + P.second + "'";
-      Parm.children.push_back(buildTypeNode(P.second, NRange));
-      Nodes.push_back(std::move(Parm));
+    if (!Params.empty()) {
+      for (const auto &P : Params) {
+        ASTNode Parm;
+        Parm.role = "declaration";
+        Parm.kind = "ParmVar";
+        Parm.detail = P.Name.empty() ? "(anonymous)" : P.Name;
+        Parm.range = P.ParamRange;
+        Parm.arcana = "ParmVarDecl " + Parm.detail + " '" + P.Type + "'";
+        Parm.children.push_back(buildTypeNode(P.Type, P.TypeRange));
+        Nodes.push_back(std::move(Parm));
+      }
+      return;
     }
+    const pseudo::Token *NameTok = nullptr;
+    for (size_t I = 0; I < NodeTokens.size(); ++I) {
+      if (NodeTokens[I].Kind == tok::raw_identifier ||
+          NodeTokens[I].Kind == tok::identifier) {
+        NameTok = &NodeTokens[I];
+      }
+    }
+    std::string ParmName = NameTok ? getOrigToken(*NameTok, Out).text().str() : "";
+    Range TypeRange = NRange;
+    std::string TypeStr = "int";
+    if (NameTok && NameTok > NodeTokens.data()) {
+      size_t TStart = tokenStartOffset(NodeTokens.front(), Out);
+      size_t TEnd = tokenStartOffset(*NameTok, Out);
+      if (TStart < TEnd && TEnd <= Code.size()) {
+        TypeStr = Code.slice(TStart, TEnd).trim().str();
+        size_t NIdx = NameTok - NodeTokens.data();
+        TypeRange = nodeRange(StartTok, StartTok + NIdx, Out, Code);
+      }
+    }
+    ASTNode Parm;
+    Parm.role = "declaration";
+    Parm.kind = "ParmVar";
+    Parm.detail = ParmName.empty() ? "(anonymous)" : ParmName;
+    Parm.range = NRange;
+    Parm.arcana = "ParmVarDecl " + Parm.detail + " '" + TypeStr + "'";
+    Parm.children.push_back(buildTypeNode(TypeStr, TypeRange));
+    Nodes.push_back(std::move(Parm));
     return;
   }
 
@@ -3558,8 +3997,8 @@ static void buildASTNodes(const pseudo::ForestNode *N, pseudo::Token::Index End,
     for (size_t I = 0; I < Children.size(); ++I) {
       pseudo::Token::Index ChildEnd =
           (I + 1 == Children.size()) ? End : Children[I + 1]->startTokenIndex();
-      buildASTNodes(Children[I], ChildEnd, Out, Code, CS.children, InsideClass,
-                    EnclosingClass);
+      buildASTNodes(Children[I], ChildEnd, Out, Code, CS.children,
+                    /*InsideClass=*/false, /*EnclosingClass=*/"");
     }
     Nodes.push_back(std::move(CS));
     return;
@@ -3576,8 +4015,8 @@ static void buildASTNodes(const pseudo::ForestNode *N, pseudo::Token::Index End,
     for (size_t I = 0; I < Children.size(); ++I) {
       pseudo::Token::Index ChildEnd =
           (I + 1 == Children.size()) ? End : Children[I + 1]->startTokenIndex();
-      buildASTNodes(Children[I], ChildEnd, Out, Code, DS.children, InsideClass,
-                    EnclosingClass);
+      buildASTNodes(Children[I], ChildEnd, Out, Code, DS.children,
+                    /*InsideClass=*/false, /*EnclosingClass=*/"");
     }
     Nodes.push_back(std::move(DS));
     return;
@@ -3930,45 +4369,6 @@ static void buildASTNodes(const pseudo::ForestNode *N, pseudo::Token::Index End,
       return;
     }
 
-    bool HasPeriod = false;
-    bool HasArrow = false;
-    size_t AccessIdx = 0;
-    for (size_t I = 0; I < NodeTokens.size(); ++I) {
-      if (NodeTokens[I].Kind == tok::period) {
-        HasPeriod = true;
-        AccessIdx = I;
-        break;
-      }
-      if (NodeTokens[I].Kind == tok::arrow) {
-        HasArrow = true;
-        AccessIdx = I;
-        break;
-      }
-    }
-    if (HasPeriod || HasArrow) {
-      std::string MemberName;
-      for (size_t I = AccessIdx + 1; I < NodeTokens.size(); ++I) {
-        if (NodeTokens[I].Kind == tok::raw_identifier ||
-            NodeTokens[I].Kind == tok::identifier) {
-          MemberName = getOrigToken(NodeTokens[I], Out).text().str();
-          break;
-        }
-      }
-      if (!MemberName.empty()) {
-        ASTNode ME;
-        ME.role = "expression";
-        ME.kind = "Member";
-        ME.detail = MemberName;
-        ME.arcana = "MemberExpr '" + std::string(HasArrow ? "->" : ".") +
-                    MemberName + "'";
-        ME.range = NRange;
-        buildASTNodes(Children[0], Children[1]->startTokenIndex(), Out, Code,
-                      ME.children, InsideClass, EnclosingClass);
-        Nodes.push_back(std::move(ME));
-        return;
-      }
-    }
-
     if (NodeTokens.back().Kind == tok::r_paren) {
       ASTNode CallNode;
       CallNode.role = "expression";
@@ -4006,6 +4406,45 @@ static void buildASTNodes(const pseudo::ForestNode *N, pseudo::Token::Index End,
       }
       Nodes.push_back(std::move(AS));
       return;
+    }
+
+    bool HasPeriod = false;
+    bool HasArrow = false;
+    size_t AccessIdx = 0;
+    for (size_t I = 0; I < NodeTokens.size(); ++I) {
+      if (NodeTokens[I].Kind == tok::period) {
+        HasPeriod = true;
+        AccessIdx = I;
+        break;
+      }
+      if (NodeTokens[I].Kind == tok::arrow) {
+        HasArrow = true;
+        AccessIdx = I;
+        break;
+      }
+    }
+    if (HasPeriod || HasArrow) {
+      std::string MemberName;
+      for (size_t I = AccessIdx + 1; I < NodeTokens.size(); ++I) {
+        if (NodeTokens[I].Kind == tok::raw_identifier ||
+            NodeTokens[I].Kind == tok::identifier) {
+          MemberName = getOrigToken(NodeTokens[I], Out).text().str();
+          break;
+        }
+      }
+      if (!MemberName.empty()) {
+        ASTNode ME;
+        ME.role = "expression";
+        ME.kind = "Member";
+        ME.detail = MemberName;
+        ME.arcana = "MemberExpr '" + std::string(HasArrow ? "->" : ".") +
+                    MemberName + "'";
+        ME.range = NRange;
+        buildASTNodes(Children[0], Children[1]->startTokenIndex(), Out, Code,
+                      ME.children, InsideClass, EnclosingClass);
+        Nodes.push_back(std::move(ME));
+        return;
+      }
     }
   }
 
@@ -4120,8 +4559,8 @@ static void buildASTNodes(const pseudo::ForestNode *N, pseudo::Token::Index End,
     for (size_t I = 0; I < Children.size(); ++I) {
       pseudo::Token::Index ChildEnd =
           (I + 1 == Children.size()) ? End : Children[I + 1]->startTokenIndex();
-      buildASTNodes(Children[I], ChildEnd, Out, Code, LE.children, InsideClass,
-                    EnclosingClass);
+      buildASTNodes(Children[I], ChildEnd, Out, Code, LE.children,
+                    /*InsideClass=*/false, /*EnclosingClass=*/"");
     }
     Nodes.push_back(std::move(LE));
     return;
@@ -4256,6 +4695,124 @@ static void buildASTNodes(const pseudo::ForestNode *N, pseudo::Token::Index End,
     return;
   }
 
+  // 26b. Constructor initializer (e.g. : Base(Base), DirtyFiles(Drafts))
+  if (Sym == pseudo::cxx::Symbol::mem_initializer) {
+    std::string MemberName;
+    const pseudo::Token *IdTok = nullptr;
+    for (size_t I = 0; I < NodeTokens.size(); ++I) {
+      if (NodeTokens[I].Kind == tok::l_paren ||
+          NodeTokens[I].Kind == tok::l_brace)
+        break;
+      if (NodeTokens[I].Kind == tok::raw_identifier ||
+          NodeTokens[I].Kind == tok::identifier) {
+        IdTok = &NodeTokens[I];
+      }
+    }
+    if (IdTok)
+      MemberName = getOrigToken(*IdTok, Out).text().str();
+
+    ASTNode InitNode;
+    InitNode.role = "constructor initializer";
+    InitNode.kind = "MemberInitializer";
+    InitNode.detail = MemberName;
+    InitNode.arcana = "CXXCtorInitializer '" + MemberName + "'";
+    InitNode.range = NRange;
+
+    auto Children = N->elements();
+    for (size_t I = 0; I < Children.size(); ++I) {
+      pseudo::Token::Index ChildEnd =
+          (I + 1 == Children.size()) ? End : Children[I + 1]->startTokenIndex();
+      buildASTNodes(Children[I], ChildEnd, Out, Code, InitNode.children,
+                    InsideClass, EnclosingClass);
+    }
+    Nodes.push_back(std::move(InitNode));
+    return;
+  }
+
+  // 26c. Condition with variable declaration: if (auto Loc = ...)
+  if (Sym == pseudo::cxx::Symbol::condition) {
+    const pseudo::Token *EqTok = nullptr;
+    const pseudo::Token *NameTok = nullptr;
+    for (size_t I = 0; I < NodeTokens.size(); ++I) {
+      if (NodeTokens[I].Kind == tok::equal) {
+        EqTok = &NodeTokens[I];
+        break;
+      }
+      if (NodeTokens[I].Kind == tok::raw_identifier ||
+          NodeTokens[I].Kind == tok::identifier) {
+        NameTok = &NodeTokens[I];
+      }
+    }
+    if (EqTok && NameTok) {
+      std::string VarName = getOrigToken(*NameTok, Out).text().str();
+      size_t NameIdx = NameTok - NodeTokens.data();
+      Range TypeRange = nodeRange(StartTok, StartTok + NameIdx, Out, Code);
+      size_t TStart = tokenStartOffset(NodeTokens.front(), Out);
+      size_t TEnd = tokenStartOffset(*NameTok, Out);
+      std::string TypeStr = (TStart < TEnd && TEnd <= Code.size())
+                                ? Code.slice(TStart, TEnd).trim().str()
+                                : "auto";
+
+      ASTNode VN;
+      VN.role = "declaration";
+      VN.kind = "Var";
+      VN.detail = VarName;
+      VN.range = NRange;
+      VN.arcana = "VarDecl " + VarName + " '" + TypeStr + "'";
+      VN.children.push_back(buildTypeNode(TypeStr, TypeRange));
+
+      auto Children = N->elements();
+      for (size_t I = 0; I < Children.size(); ++I) {
+        pseudo::Token::Index ChildEnd =
+            (I + 1 == Children.size()) ? End
+                                       : Children[I + 1]->startTokenIndex();
+        buildASTNodes(Children[I], ChildEnd, Out, Code, VN.children,
+                      InsideClass, EnclosingClass);
+      }
+      Nodes.push_back(std::move(VN));
+      return;
+    }
+  }
+
+  // 26d. Range-for declaration: for (const auto &Selection : *Selections)
+  if (Sym == pseudo::cxx::Symbol::for_range_declaration) {
+    const pseudo::Token *NameTok = nullptr;
+    for (size_t I = 0; I < NodeTokens.size(); ++I) {
+      if (NodeTokens[I].Kind == tok::raw_identifier ||
+          NodeTokens[I].Kind == tok::identifier) {
+        NameTok = &NodeTokens[I];
+      }
+    }
+    if (NameTok) {
+      std::string VarName = getOrigToken(*NameTok, Out).text().str();
+      size_t NameIdx = NameTok - NodeTokens.data();
+      Range TypeRange = nodeRange(StartTok, StartTok + NameIdx, Out, Code);
+      size_t TStart = tokenStartOffset(NodeTokens.front(), Out);
+      size_t TEnd = tokenStartOffset(*NameTok, Out);
+      std::string TypeStr = (TStart < TEnd && TEnd <= Code.size())
+                                ? Code.slice(TStart, TEnd).trim().str()
+                                : "auto";
+
+      ASTNode DS;
+      DS.role = "statement";
+      DS.kind = "Decl";
+      DS.arcana = "DeclStmt";
+      DS.range = NRange;
+
+      ASTNode VN;
+      VN.role = "declaration";
+      VN.kind = "Var";
+      VN.detail = VarName;
+      VN.range = NRange;
+      VN.arcana = "VarDecl " + VarName + " '" + TypeStr + "'";
+      VN.children.push_back(buildTypeNode(TypeStr, TypeRange));
+
+      DS.children.push_back(std::move(VN));
+      Nodes.push_back(std::move(DS));
+      return;
+    }
+  }
+
   // 27. Template declaration
   if (Sym == pseudo::cxx::Symbol::template_declaration) {
     std::vector<std::string> TemplateParams;
@@ -4319,7 +4876,7 @@ static void buildASTNodes(const pseudo::ForestNode *N, pseudo::Token::Index End,
     pseudo::Token::Index ChildEnd =
         (I + 1 == Children.size()) ? End : Children[I + 1]->startTokenIndex();
     buildASTNodes(Children[I], ChildEnd, Out, Code, Nodes, InsideClass,
-                  EnclosingClass);
+                  EnclosingClass, DeclaredType, DeclaredTypeRange);
   }
 }
 
@@ -4338,6 +4895,9 @@ static int64_t rangeSpan(Range R) {
 }
 
 static const ASTNode *findDeepestContaining(const ASTNode &Node, Range R) {
+  if (posLessEq(R.end, R.start))
+    std::swap(R.start, R.end);
+
   if (Node.range && !containsRange(*Node.range, R))
     return nullptr;
 
@@ -4347,7 +4907,7 @@ static const ASTNode *findDeepestContaining(const ASTNode &Node, Range R) {
   for (const auto &C : Node.children) {
     if (const ASTNode *Descendant = findDeepestContaining(C, R)) {
       int64_t Span = Descendant->range ? rangeSpan(*Descendant->range) : 0;
-      if (!Tightest || Span < SmallestSpan) {
+      if (!Tightest || Span <= SmallestSpan) {
         Tightest = Descendant;
         SmallestSpan = Span;
       }
