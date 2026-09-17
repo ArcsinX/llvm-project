@@ -2575,6 +2575,194 @@ TEST(PseudoModuleTest, StringRefInLambdaParamGTD) {
       << "Must not jump to Config.h!";
 }
 
+TEST(PseudoModuleTest, CtorMemberInitializerGTD) {
+  Annotations Code(R"cpp(
+    struct Callbacks {};
+    struct Provider {};
+    struct Impl {
+      const Provider *$fieldProv^Provider;
+      Callbacks *$fieldPub^Publish;
+
+      Impl(const Provider *$paramProv^Provider, Callbacks *$paramPub^Publish)
+          : $initProvField^Provider($initProvArg^Provider),
+            $initPubField^Publish($initPubArg^Publish) {}
+    };
+  )cpp");
+
+  PseudoModule Mod;
+  std::string SourceFile = testPath("Test.cpp");
+
+  // Field before '(' must jump to class field declaration
+  auto LocFieldPub = Mod.locateSymbolAt(SourceFile, Code.code(), Code.point("initPubField"));
+  ASSERT_TRUE(LocFieldPub && !LocFieldPub->empty());
+  EXPECT_EQ(LocFieldPub->front().PreferredDeclaration.range.start, Code.point("fieldPub"));
+
+  auto LocFieldProv = Mod.locateSymbolAt(SourceFile, Code.code(), Code.point("initProvField"));
+  ASSERT_TRUE(LocFieldProv && !LocFieldProv->empty());
+  EXPECT_EQ(LocFieldProv->front().PreferredDeclaration.range.start, Code.point("fieldProv"));
+
+  // Argument inside '(' must jump to constructor parameter
+  auto LocArgPub = Mod.locateSymbolAt(SourceFile, Code.code(), Code.point("initPubArg"));
+  ASSERT_TRUE(LocArgPub && !LocArgPub->empty());
+  EXPECT_EQ(LocArgPub->front().PreferredDeclaration.range.start, Code.point("paramPub"));
+
+  auto LocArgProv = Mod.locateSymbolAt(SourceFile, Code.code(), Code.point("initProvArg"));
+  ASSERT_TRUE(LocArgProv && !LocArgProv->empty());
+  EXPECT_EQ(LocArgProv->front().PreferredDeclaration.range.start, Code.point("paramProv"));
+}
+
+TEST(PseudoModuleTest, ContextCurrentCloneGTD) {
+  MockFS FS;
+  auto CDB = std::make_unique<MockCompilationDatabase>();
+
+  std::string ContextH = testPath("support/Context.h");
+  std::string SourceFile = testPath("ClangdServer.cpp");
+
+  FS.Files[ContextH] = R"cpp(
+    namespace clang {
+    namespace clangd {
+    class Context {
+    public:
+      static const Context &current();
+      Context clone() const;
+    };
+    }
+    }
+  )cpp";
+
+  PseudoModule Mod;
+  Mod.setFSForTesting(&FS);
+  Mod.setCompilationDatabaseForTesting(CDB.get());
+
+  Annotations Code(R"cpp(
+    #include "support/Context.h"
+    void test() {
+      auto fn = []() {
+        return Context::$cur^current().$cln^clone();
+      };
+    }
+  )cpp");
+
+  auto LocCur = Mod.locateSymbolAt(SourceFile, Code.code(), Code.point("cur"));
+  ASSERT_TRUE(LocCur && !LocCur->empty());
+  EXPECT_EQ(LocCur->front().Name, "current");
+  EXPECT_TRUE(llvm::StringRef(LocCur->front().PreferredDeclaration.uri.file()).ends_with("Context.h"));
+
+  auto LocCln = Mod.locateSymbolAt(SourceFile, Code.code(), Code.point("cln"));
+  ASSERT_TRUE(LocCln && !LocCln->empty());
+  EXPECT_EQ(LocCln->front().Name, "clone");
+  EXPECT_TRUE(llvm::StringRef(LocCln->front().PreferredDeclaration.uri.file()).ends_with("Context.h"));
+}
+
+TEST(PseudoModuleTest, RealStringRefMacroClassGTD) {
+  MockFS FS;
+  auto CDB = std::make_unique<MockCompilationDatabase>();
+
+  std::string StringRefH = testPath("llvm/ADT/StringRef.h");
+  std::string SourceFile = testPath("ClangdServer.cpp");
+
+  FS.Files[StringRefH] = R"cpp(
+    namespace llvm {
+    class StringRef;
+    class LLVM_GSL_POINTER StringRef {
+    public:
+      StringRef();
+    };
+    }
+  )cpp";
+
+  PseudoModule Mod;
+  Mod.setFSForTesting(&FS);
+  Mod.setCompilationDatabaseForTesting(CDB.get());
+
+  Annotations Code(R"cpp(
+    #include "llvm/ADT/StringRef.h"
+    void test() {
+      auto fn = [](llvm::$strRef^StringRef) {};
+    }
+  )cpp");
+
+  auto Loc = Mod.locateSymbolAt(SourceFile, Code.code(), Code.point("strRef"));
+  ASSERT_TRUE(Loc && !Loc->empty());
+  EXPECT_EQ(Loc->front().Name, "StringRef");
+  EXPECT_TRUE(llvm::StringRef(Loc->front().PreferredDeclaration.uri.file()).ends_with("StringRef.h"));
+}
+
+TEST(PseudoModuleTest, RealClangdServerFileLine359GTD) {
+  PseudoModule Mod;
+  std::string Path = "/Users/usovaanastasia/work/llvm-project/clang-tools-extra/clangd/ClangdServer.cpp";
+  auto Buf = llvm::MemoryBuffer::getFile(Path);
+  ASSERT_TRUE(bool(Buf));
+  llvm::StringRef Code = (*Buf)->getBuffer();
+
+  // Find "[](llvm::StringRef)"
+  size_t Pos = Code.find("[](llvm::StringRef)");
+  ASSERT_NE(Pos, llvm::StringRef::npos);
+  size_t StrRefPos = Pos + std::string("[](llvm::").size();
+  Position StrRefPosition = offsetToPosition(Code, StrRefPos);
+
+  auto LocStrRef = Mod.locateSymbolAt(Path, Code, StrRefPosition);
+  EXPECT_TRUE(LocStrRef && !LocStrRef->empty()) << (LocStrRef ? "empty" : llvm::toString(LocStrRef.takeError()));
+  if (LocStrRef && !LocStrRef->empty()) {
+    EXPECT_EQ(LocStrRef->front().Name, "StringRef");
+    EXPECT_TRUE(llvm::StringRef(LocStrRef->front().PreferredDeclaration.uri.file()).ends_with("StringRef.h"))
+        << "Got: " << LocStrRef->front().PreferredDeclaration.uri.file();
+  }
+
+  size_t CurPos = Code.find("current()", Pos);
+  ASSERT_NE(CurPos, llvm::StringRef::npos);
+  Position CurPosition = offsetToPosition(Code, CurPos);
+
+  auto LocCur = Mod.locateSymbolAt(Path, Code, CurPosition);
+  EXPECT_TRUE(LocCur && !LocCur->empty()) << (LocCur ? "empty" : llvm::toString(LocCur.takeError()));
+  if (LocCur && !LocCur->empty()) {
+    EXPECT_EQ(LocCur->front().Name, "current");
+    EXPECT_TRUE(llvm::StringRef(LocCur->front().PreferredDeclaration.uri.file()).ends_with("Context.h"))
+        << "Got: " << LocCur->front().PreferredDeclaration.uri.file();
+  }
+
+  size_t ClonePos = Code.find("clone()", Pos);
+  ASSERT_NE(ClonePos, llvm::StringRef::npos);
+  Position ClonePosition = offsetToPosition(Code, ClonePos);
+
+  auto LocClone = Mod.locateSymbolAt(Path, Code, ClonePosition);
+  EXPECT_TRUE(LocClone && !LocClone->empty()) << (LocClone ? "empty" : llvm::toString(LocClone.takeError()));
+  if (LocClone && !LocClone->empty()) {
+    EXPECT_EQ(LocClone->front().Name, "clone");
+    EXPECT_TRUE(llvm::StringRef(LocClone->front().PreferredDeclaration.uri.file()).ends_with("Context.h"))
+        << "Got: " << LocClone->front().PreferredDeclaration.uri.file();
+  }
+
+  // Test Publish(Publish) on line 367 of ClangdServer.cpp
+  // struct Impl {
+  //   const config::Provider *Provider;
+  //   ClangdServer::Callbacks *Publish;
+  //   ...
+  //   Impl(const config::Provider *Provider, ClangdServer::Callbacks *Publish)
+  //       : Provider(Provider), Publish(Publish) {}
+  size_t FieldPubDeclPos = Code.find("ClangdServer::Callbacks *Publish;");
+  ASSERT_NE(FieldPubDeclPos, llvm::StringRef::npos);
+  Position FieldPubDeclPosition = offsetToPosition(Code, FieldPubDeclPos + std::string("ClangdServer::Callbacks *").size());
+
+  size_t ParamPubDeclPos = Code.find("ClangdServer::Callbacks *Publish)", FieldPubDeclPos);
+  ASSERT_NE(ParamPubDeclPos, llvm::StringRef::npos);
+  Position ParamPubDeclPosition = offsetToPosition(Code, ParamPubDeclPos + std::string("ClangdServer::Callbacks *").size());
+
+  size_t InitListPos = Code.find(": Provider(Provider), Publish(Publish)", ParamPubDeclPos);
+  ASSERT_NE(InitListPos, llvm::StringRef::npos);
+
+  size_t FirstPubPos = InitListPos + std::string(": Provider(Provider), ").size();
+  size_t SecondPubPos = InitListPos + std::string(": Provider(Provider), Publish(").size();
+
+  auto LocFirstPub = Mod.locateSymbolAt(Path, Code, offsetToPosition(Code, FirstPubPos));
+  ASSERT_TRUE(LocFirstPub && !LocFirstPub->empty());
+  EXPECT_EQ(LocFirstPub->front().PreferredDeclaration.range.start, FieldPubDeclPosition);
+
+  auto LocSecondPub = Mod.locateSymbolAt(Path, Code, offsetToPosition(Code, SecondPubPos));
+  ASSERT_TRUE(LocSecondPub && !LocSecondPub->empty());
+  EXPECT_EQ(LocSecondPub->front().PreferredDeclaration.range.start, ParamPubDeclPosition);
+}
+
 } // namespace
 } // namespace clangd
 } // namespace clang

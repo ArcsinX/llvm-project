@@ -778,6 +778,56 @@ void scanOpaqueDeclarations(pseudo::Token::Index StartTok,
       continue;
     }
 
+    if (TK == tok::kw_namespace) {
+      size_t J = I + 1;
+      std::string NsName;
+      const pseudo::Token *NsTok = nullptr;
+      size_t K = J;
+      while (K < EndTok && Tokens[K].Kind != tok::l_brace &&
+             Tokens[K].Kind != tok::semi) {
+        if (Tokens[K].Kind == tok::raw_identifier ||
+            Tokens[K].Kind == tok::identifier) {
+          if (!NsName.empty() && K > J && Tokens[K - 1].Kind == tok::coloncolon)
+            NsName += "::";
+          NsName += getOrigToken(Tokens[K], Out).text().str();
+          NsTok = &Tokens[K];
+        }
+        ++K;
+      }
+      if (K < EndTok && Tokens[K].Kind == tok::l_brace) {
+        if (NsTok && !NsName.empty()) {
+          LocalDecl LD;
+          LD.Name = NsName;
+          LD.NameRange = tokenRange(*NsTok, Out, Code);
+          LD.DeclRange = Range{tokenRange(Tokens[I], Out, Code).start,
+                               tokenRange(Tokens[K], Out, Code).end};
+          LD.DeclOffset = tokenStartOffset(*NsTok, Out);
+          LD.ScopeId = CurScopeId;
+          LD.EnclosingClass = Scopes[CurScopeId].EnclosingClass;
+          LD.IsDefinition = true;
+          LD.Kind = PseudoModule::DeclKind::Namespace;
+          Scopes[CurScopeId].Decls.push_back(std::move(LD));
+        }
+
+        size_t NewScopeId = Scopes.size();
+        LexicalScope S;
+        S.Id = NewScopeId;
+        S.ParentId = CurScopeId;
+        S.Kind = ScopeKind::Namespace;
+        S.Name = NsName;
+        S.EnclosingClass = Scopes[CurScopeId].EnclosingClass;
+        S.StartOffset = tokenStartOffset(Tokens[K], Out);
+        S.EndOffset = tokenEndOffset(Tokens[K], Out);
+        S.ScopeRange = tokenRange(Tokens[K], Out, Code);
+        Scopes[CurScopeId].Children.push_back(NewScopeId);
+        Scopes.push_back(std::move(S));
+        ScopeStack.push_back(CurScopeId);
+        CurScopeId = NewScopeId;
+        I = K + 1;
+        continue;
+      }
+    }
+
     if (TK == tok::kw_class || TK == tok::kw_struct) {
       size_t J = I + 1;
       const pseudo::Token *NameTok = nullptr;
@@ -2255,7 +2305,16 @@ PseudoModule::getHeaderInfo(llvm::StringRef HeaderPath,
       HD.Name = D.Name;
       HD.NameRange = D.NameRange;
       HD.ScopeRange = D.DeclRange;
-      HD.EnclosingScope = Scope.Name;
+      std::string EnclNs;
+      for (size_t Cur = Scope.Id; Cur != 0; Cur = Scopes[Cur].ParentId) {
+        if (Scopes[Cur].Kind == ScopeKind::Namespace && !Scopes[Cur].Name.empty()) {
+          EnclNs = Scopes[Cur].Name;
+          break;
+        }
+      }
+      HD.EnclosingScope = (Scope.Kind == ScopeKind::Namespace && !Scope.Name.empty())
+                              ? Scope.Name
+                              : EnclNs;
       HD.EnclosingClass = !D.EnclosingClass.empty()
                               ? D.EnclosingClass
                               : (Scope.Kind == ScopeKind::Class ? Scope.Name : "");
@@ -2409,6 +2468,79 @@ static const pseudo::Token *getNextNonComment(size_t Idx, const ParseOutput &Out
       return &T;
   }
   return nullptr;
+}
+
+static bool isCtorMemberInitializerName(const pseudo::Token *Touched,
+                                        const ParseOutput &Out) {
+  if (!Touched)
+    return false;
+  const pseudo::Token *RawTok = nullptr;
+  if (Touched->OriginalIndex != pseudo::Token::Invalid &&
+      Touched->OriginalIndex < Out.RawStream.tokens().size()) {
+    RawTok = &Out.RawStream.tokens()[Touched->OriginalIndex];
+  } else if (Touched >= Out.RawStream.tokens().data() &&
+             Touched < Out.RawStream.tokens().data() + Out.RawStream.tokens().size()) {
+    RawTok = Touched;
+  }
+  if (!RawTok)
+    return false;
+
+  size_t Idx = Out.RawStream.index(*RawTok);
+  const auto *Next = getNextNonComment(Idx, Out);
+  if (!Next || (Next->Kind != tok::l_paren && Next->Kind != tok::l_brace))
+    return false;
+
+  const auto *Prev = getPrevNonComment(Idx, Out);
+  if (!Prev || (Prev->Kind != tok::colon && Prev->Kind != tok::comma))
+    return false;
+
+  int Depth = 0;
+  bool FoundColon = false;
+  size_t PrevIdx = Out.RawStream.index(*Prev);
+  if (Prev->Kind == tok::colon) {
+    FoundColon = true;
+  } else {
+    size_t Step = 1;
+    while (PrevIdx >= Step) {
+      const auto &T = Out.RawStream.tokens()[PrevIdx - Step];
+      ++Step;
+      if (T.Kind == tok::comment)
+        continue;
+      if (T.Kind == tok::r_paren || T.Kind == tok::r_brace)
+        ++Depth;
+      else if (T.Kind == tok::l_paren || T.Kind == tok::l_brace) {
+        if (Depth > 0)
+          --Depth;
+        else
+          return false;
+      } else if (Depth == 0 && T.Kind == tok::colon) {
+        FoundColon = true;
+        PrevIdx = PrevIdx - Step + 1;
+        break;
+      } else if (Depth == 0 && (T.Kind == tok::semi || T.Kind == tok::l_brace)) {
+        return false;
+      }
+    }
+  }
+
+  if (!FoundColon)
+    return false;
+
+  size_t Step = 1;
+  while (PrevIdx >= Step) {
+    const auto &T = Out.RawStream.tokens()[PrevIdx - Step];
+    ++Step;
+    if (T.Kind == tok::comment)
+      continue;
+    if (T.Kind == tok::r_paren)
+      return true;
+    if (T.Kind == tok::kw_noexcept || T.Kind == tok::raw_identifier ||
+        T.Kind == tok::identifier)
+      continue;
+    if (T.Kind == tok::semi || T.Kind == tok::l_brace || T.Kind == tok::r_brace)
+      return false;
+  }
+  return false;
 }
 
 static bool isTypeContext(const pseudo::Token *Touched, const ParseOutput &Out) {
@@ -2582,11 +2714,45 @@ static void traverseIncludedHeaders(
 
 static std::string unwrapType(llvm::StringRef TypeName) {
   llvm::StringRef T = TypeName.trim();
-  while (T.starts_with("const ") || T.starts_with("volatile ")) {
-    if (T.starts_with("const "))
-      T = T.drop_front(6).trim();
-    if (T.starts_with("volatile "))
+  bool Stripped = true;
+  while (Stripped) {
+    Stripped = false;
+    if (T.starts_with("static ")) {
+      T = T.drop_front(7).trim();
+      Stripped = true;
+    }
+    if (T.starts_with("inline ")) {
+      T = T.drop_front(7).trim();
+      Stripped = true;
+    }
+    if (T.starts_with("constexpr ")) {
+      T = T.drop_front(10).trim();
+      Stripped = true;
+    }
+    if (T.starts_with("consteval ")) {
+      T = T.drop_front(10).trim();
+      Stripped = true;
+    }
+    if (T.starts_with("virtual ")) {
+      T = T.drop_front(8).trim();
+      Stripped = true;
+    }
+    if (T.starts_with("explicit ")) {
       T = T.drop_front(9).trim();
+      Stripped = true;
+    }
+    if (T.starts_with("friend ")) {
+      T = T.drop_front(7).trim();
+      Stripped = true;
+    }
+    if (T.starts_with("const ")) {
+      T = T.drop_front(6).trim();
+      Stripped = true;
+    }
+    if (T.starts_with("volatile ")) {
+      T = T.drop_front(9).trim();
+      Stripped = true;
+    }
   }
   while (T.ends_with("*") || T.ends_with("&"))
     T = T.drop_back(1).trim();
@@ -2662,9 +2828,22 @@ static std::string resolveExprType(
         ReceiverType = resolveExprType(
             Self, Pre.take_front(DotPos - 2).rtrim(), CursorOffset, BestScope,
             Scopes, Code, File, FS, EffectiveEnclosingClass);
+      } else if (DotPos >= 2 && Pre.slice(DotPos - 2, DotPos) == "::") {
+        ssize_t ScopeEnd = DotPos - 2;
+        while (ScopeEnd > 0 && llvm::isSpace(Pre[ScopeEnd - 1]))
+          --ScopeEnd;
+        ssize_t ScopeStart = ScopeEnd;
+        while (ScopeStart > 0 &&
+               (llvm::isAlnum(Pre[ScopeStart - 1]) || Pre[ScopeStart - 1] == '_'))
+          --ScopeStart;
+        ReceiverType = Pre.slice(ScopeStart, ScopeEnd).str();
       }
 
       // Deduce return type for common methods
+      if (FnName == "current" && (ReceiverType == "Context" || ReceiverType.empty()))
+        return "Context";
+      if (FnName == "clone" && (ReceiverType == "Context" || ReceiverType.empty()))
+        return "Context";
       if (FnName == "getName" || FnName == "getDesc")
         return "llvm::StringRef";
       if (FnName == "instantiate") {
@@ -2851,6 +3030,37 @@ static const LocalDecl *resolveTargetDecl(
     llvm::StringRef Code, bool ExpectsType = false) {
   std::string TargetName = getOrigToken(*Touched, Parsed).text().str();
   size_t TouchedOffset = tokenStartOffset(*Touched, Parsed);
+
+  if (isCtorMemberInitializerName(Touched, Parsed)) {
+    std::string TargetClass = Scopes[BestScope].EnclosingClass;
+    if (TargetClass.empty() && Scopes[BestScope].ParentId < Scopes.size()) {
+      const auto &ParentScope = Scopes[Scopes[BestScope].ParentId];
+      if (ParentScope.Kind == ScopeKind::Class)
+        TargetClass = ParentScope.Name;
+    }
+    for (const auto &S : Scopes) {
+      if (S.Kind == ScopeKind::Class &&
+          (TargetClass.empty() || S.Name == TargetClass ||
+           S.EnclosingClass == TargetClass)) {
+        for (const auto &D : S.Decls) {
+          if (D.Name == TargetName && D.IsMember && !D.IsParameter &&
+              D.Kind != PseudoModule::DeclKind::Parameter) {
+            return &D;
+          }
+        }
+      }
+    }
+    for (const auto &S : Scopes) {
+      for (const auto &D : S.Decls) {
+        if (D.Name == TargetName && D.IsMember && !D.IsParameter &&
+            D.Kind != PseudoModule::DeclKind::Parameter &&
+            (TargetClass.empty() || D.EnclosingClass == TargetClass)) {
+          return &D;
+        }
+      }
+    }
+    return nullptr;
+  }
 
   const LocalDecl *TargetDecl = nullptr;
   const pseudo::Token *RawTok = nullptr;
