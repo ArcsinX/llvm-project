@@ -210,6 +210,36 @@ TokenStream stripAttributes(const TokenStream &Input) {
       }
     }
 
+    // 3b. LLVM attribute macros: LLVM_PREFERRED_TYPE(...), LLVM_ABI, etc.
+    if (Tokens[I].Kind == tok::raw_identifier || Tokens[I].Kind == tok::identifier) {
+      llvm::StringRef Txt = Tokens[I].text();
+      if (Txt == "LLVM_PREFERRED_TYPE" ||
+          (Txt.starts_with("LLVM_") && Txt != "LLVM_DEBUG" &&
+           (Txt.ends_with("_TYPE") || Txt.contains("ATTRIBUTE") ||
+            Txt.contains("NODISCARD") || Txt.contains("READONLY") ||
+            Txt.contains("ALIGNAS")))) {
+        size_t J = I + 1;
+        if (J < N && Tokens[J].Kind == tok::l_paren) {
+          int ParenDepth = 0;
+          while (J < N) {
+            if (Tokens[J].Kind == tok::l_paren) {
+              ++ParenDepth;
+              ++J;
+            } else if (Tokens[J].Kind == tok::r_paren) {
+              --ParenDepth;
+              ++J;
+              if (ParenDepth == 0)
+                break;
+            } else {
+              ++J;
+            }
+          }
+          I = J;
+          continue;
+        }
+      }
+    }
+
     // 4. Standalone macro invocations without semicolon (e.g. DECLARE_SERVICE(Foo), Q_OBJECT)
     if (Tokens[I].Kind == tok::raw_identifier || Tokens[I].Kind == tok::identifier) {
       bool PrecededByDeclBoundary = false;
@@ -250,8 +280,14 @@ TokenStream stripAttributes(const TokenStream &Input) {
                   (NK == tok::kw_public || NK == tok::kw_protected ||
                    NK == tok::kw_private || NK == tok::r_brace ||
                    NK == tok::kw_void || NK == tok::kw_int || NK == tok::kw_bool ||
-                   NK == tok::kw_char || NK == tok::kw_class || NK == tok::kw_struct ||
-                   NK == tok::kw_virtual || NK == tok::kw_static);
+                   NK == tok::kw_char || NK == tok::kw_unsigned ||
+                   NK == tok::kw_signed || NK == tok::kw_long ||
+                   NK == tok::kw_short || NK == tok::kw_float ||
+                   NK == tok::kw_double || NK == tok::kw_auto ||
+                   NK == tok::kw_const || NK == tok::kw_volatile ||
+                   NK == tok::kw_constexpr || NK == tok::kw_class ||
+                   NK == tok::kw_struct || NK == tok::kw_virtual ||
+                   NK == tok::kw_static);
               if (IsFollowedByDeclBoundary) {
                 I = NextIdx;
                 continue;
