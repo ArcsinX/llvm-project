@@ -656,6 +656,9 @@ struct LocalDecl {
   bool IsParameter = false;
   bool IsMember = false;
   bool IsDefinition = false;
+  bool IsCapture = false;
+  bool IsInitCapture = false;
+  size_t CapturedDeclOffset = 0;
   PseudoModule::DeclKind Kind = PseudoModule::DeclKind::Unknown;
 };
 
@@ -887,6 +890,69 @@ void scanOpaqueDeclarations(pseudo::Token::Index StartTok,
           LD.Kind = PseudoModule::DeclKind::Class;
           Scopes[CurScopeId].Decls.push_back(std::move(LD));
           I = K + 1;
+          continue;
+        }
+      }
+    }
+
+    if (TK == tok::kw_enum) {
+      size_t J = I + 1;
+      const pseudo::Token *NameTok = nullptr;
+      size_t K = J;
+      while (K < EndTok && Tokens[K].Kind != tok::l_brace &&
+             Tokens[K].Kind != tok::colon && Tokens[K].Kind != tok::semi) {
+        if (Tokens[K].Kind == tok::raw_identifier ||
+            Tokens[K].Kind == tok::identifier) {
+          NameTok = &Tokens[K];
+        }
+        ++K;
+      }
+      if (NameTok) {
+        std::string EnumName = getOrigToken(*NameTok, Out).text().str();
+        while (K < EndTok && Tokens[K].Kind != tok::l_brace &&
+               Tokens[K].Kind != tok::semi)
+          ++K;
+        if (K < EndTok && Tokens[K].Kind == tok::l_brace) {
+          LocalDecl LD;
+          LD.Name = EnumName;
+          LD.NameRange = tokenRange(*NameTok, Out, Code);
+          LD.DeclRange = Range{tokenRange(Tokens[I], Out, Code).start,
+                               tokenRange(Tokens[K], Out, Code).end};
+          LD.DeclOffset = tokenStartOffset(*NameTok, Out);
+          LD.ScopeId = CurScopeId;
+          LD.EnclosingClass = Scopes[CurScopeId].EnclosingClass;
+          LD.IsDefinition = true;
+          LD.Kind = PseudoModule::DeclKind::Enum;
+          Scopes[CurScopeId].Decls.push_back(std::move(LD));
+
+          // Scan enumerator members inside braces
+          size_t L = K + 1;
+          while (L < EndTok && Tokens[L].Kind != tok::r_brace) {
+            if (Tokens[L].Kind == tok::raw_identifier ||
+                Tokens[L].Kind == tok::identifier) {
+              LocalDecl Member;
+              Member.Name = getOrigToken(Tokens[L], Out).text().str();
+              Member.NameRange = tokenRange(Tokens[L], Out, Code);
+              Member.DeclRange = Member.NameRange;
+              Member.DeclOffset = tokenStartOffset(Tokens[L], Out);
+              Member.ScopeId = CurScopeId;
+              Member.EnclosingClass = EnumName;
+              Member.IsDefinition = true;
+              Member.Kind = PseudoModule::DeclKind::EnumValue;
+              Scopes[CurScopeId].Decls.push_back(std::move(Member));
+              while (L < EndTok && Tokens[L].Kind != tok::comma &&
+                     Tokens[L].Kind != tok::r_brace)
+                ++L;
+              if (L < EndTok && Tokens[L].Kind == tok::comma)
+                ++L;
+              continue;
+            }
+            ++L;
+          }
+          if (L < EndTok && Tokens[L].Kind == tok::r_brace)
+            I = L + 1;
+          else
+            I = K + 1;
           continue;
         }
       }
@@ -1717,7 +1783,24 @@ void buildScopes(const pseudo::ForestNode *N, pseudo::Token::Index End,
     S.Id = NewScopeId;
     S.ParentId = CurrentScopeId;
     S.Kind = ScopeKind::Block;
-    S.StartOffset = tokenStartOffset(Out.ParseableStream.tokens()[StartTok], Out);
+
+    pseudo::Token::Index IntroducerEnd = StartTok;
+    int BracketDepth = 0;
+    for (size_t I = 0; I < NodeTokens.size(); ++I) {
+      if (NodeTokens[I].Kind == tok::l_square)
+        ++BracketDepth;
+      else if (NodeTokens[I].Kind == tok::r_square) {
+        --BracketDepth;
+        if (BracketDepth <= 0) {
+          IntroducerEnd = StartTok + I + 1;
+          break;
+        }
+      }
+    }
+    if (IntroducerEnd < EndTok)
+      S.StartOffset = tokenStartOffset(Out.ParseableStream.tokens()[IntroducerEnd], Out);
+    else
+      S.StartOffset = tokenStartOffset(Out.ParseableStream.tokens()[StartTok], Out);
     S.EndOffset = tokenEndOffset(Out.ParseableStream.tokens()[EndTok - 1], Out);
     S.ScopeRange = nodeRange(StartTok, EndTok, Out, Code);
     S.EnclosingClass = EnclosingClass;
@@ -1765,20 +1848,28 @@ void buildScopes(const pseudo::ForestNode *N, pseudo::Token::Index End,
               LD.ScopeId = NewScopeId;
               LD.Kind = PseudoModule::DeclKind::Variable;
               LD.IsDefinition = true;
+              LD.IsCapture = true;
+              LD.IsInitCapture = IsInitCapture;
 
               if (IsInitCapture && RhsNameTok) {
                 // e.g. CB = std::move(CB) — RHS is the outer CB
                 llvm::StringRef RhsName = getOrigToken(*RhsNameTok, Out).text();
                 const LocalDecl *OuterDecl = lookupDecl(
                     SavedScope, RhsName, LD.DeclOffset, Scopes, Code);
-                if (OuterDecl && !OuterDecl->TypeName.empty())
-                  LD.TypeName = OuterDecl->TypeName;
+                if (OuterDecl) {
+                  LD.CapturedDeclOffset = OuterDecl->DeclOffset;
+                  if (!OuterDecl->TypeName.empty())
+                    LD.TypeName = OuterDecl->TypeName;
+                }
               } else {
                 // Simple capture: look up name in parent scope
                 const LocalDecl *OuterDecl = lookupDecl(
                     SavedScope, CaptName, LD.DeclOffset, Scopes, Code);
-                if (OuterDecl && !OuterDecl->TypeName.empty())
-                  LD.TypeName = OuterDecl->TypeName;
+                if (OuterDecl) {
+                  LD.CapturedDeclOffset = OuterDecl->DeclOffset;
+                  if (!OuterDecl->TypeName.empty())
+                    LD.TypeName = OuterDecl->TypeName;
+                }
               }
               Scopes[NewScopeId].Decls.push_back(std::move(LD));
               CaptureName = nullptr;
@@ -1804,18 +1895,26 @@ void buildScopes(const pseudo::ForestNode *N, pseudo::Token::Index End,
             LD.ScopeId = NewScopeId;
             LD.Kind = PseudoModule::DeclKind::Variable;
             LD.IsDefinition = true;
+            LD.IsCapture = true;
+            LD.IsInitCapture = IsInitCapture;
 
             if (IsInitCapture && RhsNameTok) {
               llvm::StringRef RhsName = getOrigToken(*RhsNameTok, Out).text();
               const LocalDecl *OuterDecl = lookupDecl(
                   SavedScope, RhsName, LD.DeclOffset, Scopes, Code);
-              if (OuterDecl && !OuterDecl->TypeName.empty())
-                LD.TypeName = OuterDecl->TypeName;
+              if (OuterDecl) {
+                LD.CapturedDeclOffset = OuterDecl->DeclOffset;
+                if (!OuterDecl->TypeName.empty())
+                  LD.TypeName = OuterDecl->TypeName;
+              }
             } else {
               const LocalDecl *OuterDecl = lookupDecl(
                   SavedScope, CaptName, LD.DeclOffset, Scopes, Code);
-              if (OuterDecl && !OuterDecl->TypeName.empty())
-                LD.TypeName = OuterDecl->TypeName;
+              if (OuterDecl) {
+                LD.CapturedDeclOffset = OuterDecl->DeclOffset;
+                if (!OuterDecl->TypeName.empty())
+                  LD.TypeName = OuterDecl->TypeName;
+              }
             }
             Scopes[NewScopeId].Decls.push_back(std::move(LD));
           }
@@ -1874,9 +1973,11 @@ void buildScopes(const pseudo::ForestNode *N, pseudo::Token::Index End,
           NodeTokens[I].Kind == tok::identifier)
         NameTok = &NodeTokens[I];
     }
+    std::string EnumName;
     if (NameTok) {
+      EnumName = getOrigToken(*NameTok, Out).text().str();
       LocalDecl LD;
-      LD.Name = getOrigToken(*NameTok, Out).text().str();
+      LD.Name = EnumName;
       LD.NameRange = tokenRange(*NameTok, Out, Code);
       LD.DeclRange = nodeRange(StartTok, EndTok, Out, Code);
       LD.DeclOffset = tokenStartOffset(*NameTok, Out);
@@ -1902,7 +2003,7 @@ void buildScopes(const pseudo::ForestNode *N, pseudo::Token::Index End,
         Member.DeclRange = Member.NameRange;
         Member.DeclOffset = tokenStartOffset(NodeTokens[I], Out);
         Member.ScopeId = CurrentScopeId;
-        Member.EnclosingClass = std::string(EnclosingClass);
+        Member.EnclosingClass = !EnumName.empty() ? EnumName : std::string(EnclosingClass);
         Member.IsDefinition = true;
         Member.Kind = PseudoModule::DeclKind::EnumValue;
         Scopes[CurrentScopeId].Decls.push_back(std::move(Member));
@@ -2128,6 +2229,16 @@ static bool isSameEntity(const LocalDecl *A, const LocalDecl *B) {
     return true;
   if (A->Name != B->Name)
     return false;
+  if (A->IsCapture && A->CapturedDeclOffset == B->DeclOffset &&
+      A->CapturedDeclOffset != 0)
+    return true;
+  if (B->IsCapture && B->CapturedDeclOffset == A->DeclOffset &&
+      B->CapturedDeclOffset != 0)
+    return true;
+  if (A->IsCapture && B->IsCapture &&
+      A->CapturedDeclOffset == B->CapturedDeclOffset &&
+      A->CapturedDeclOffset != 0)
+    return true;
   if (A->IsMember && B->IsMember)
     return !A->EnclosingClass.empty() && A->EnclosingClass == B->EnclosingClass;
   if (!A->IsMember && !B->IsMember)
@@ -3259,6 +3370,14 @@ static const LocalDecl *resolveTargetDecl(
     return nullptr;
   }
 
+  // If touched token is on the LHS of an init-capture definition, return that capture.
+  for (const auto &S : Scopes) {
+    for (const auto &D : S.Decls) {
+      if (D.IsInitCapture && D.DeclOffset == TouchedOffset && D.Name == TargetName)
+        return &D;
+    }
+  }
+
   const LocalDecl *TargetDecl = nullptr;
   const pseudo::Token *RawTok = nullptr;
   if (Touched->OriginalIndex != pseudo::Token::Invalid &&
@@ -4055,10 +4174,11 @@ PseudoModule::locateSymbolAt(PathRef File, llvm::StringRef Code, Position Pos) {
             if (D.Name == TargetName) {
               if (ExpectsType && !PseudoModule::isTypeDecl(D.Kind))
                 continue;
-              if (D.EnclosingClass == LhsName || D.EnclosingScope == LhsName ||
+              if (D.EnclosingClass == LhsName ||
+                  (D.EnclosingClass.empty() && D.EnclosingScope == LhsName) ||
                   (!ResolvedLhs.empty() &&
                    (D.EnclosingClass == ResolvedLhs ||
-                    D.EnclosingScope == ResolvedLhs)) ||
+                    (D.EnclosingClass.empty() && D.EnclosingScope == ResolvedLhs))) ||
                   (llvm::StringRef(LhsName).ends_with("Registry") && D.EnclosingClass == "Registry") ||
                   (!LhsName.empty() && !D.EnclosingClass.empty() &&
                    llvm::StringRef(LhsName).ends_with_insensitive(D.EnclosingClass))) {
