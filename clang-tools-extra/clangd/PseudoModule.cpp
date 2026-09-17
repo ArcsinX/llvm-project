@@ -660,6 +660,8 @@ struct LocalDecl {
   bool IsInitCapture = false;
   size_t CapturedDeclOffset = 0;
   PseudoModule::DeclKind Kind = PseudoModule::DeclKind::Unknown;
+  std::string InitExpr;
+  bool IsRangeFor = false;
 };
 
 struct LexicalScope {
@@ -1558,16 +1560,91 @@ void buildScopes(const pseudo::ForestNode *N, pseudo::Token::Index End,
         NameTok = &NodeTokens[I];
       }
     }
+    // When buildScopes processes for_range_declaration, 'End' (EndTok) is the
+    // start of the for_range_initializer node (the container expression), since
+    // the ':' is a grammar terminal between them. So we can directly use EndTok
+    // as the start of the container expression and search forward for ')'.
+    std::string ContainerExpr;
+    const auto &StreamTokens = Out.ParseableStream.tokens();
+    // Also try searching backward from EndTok for ':' in case the pseudo-grammar
+    // includes the colon in the for_range_declaration's range.
+    size_t InitStart = EndTok;
+    // Check if EndTok is immediately after a colon (common layout)
+    // or if we need to skip the colon token
+    if (InitStart < StreamTokens.size() &&
+        StreamTokens[InitStart].Kind == tok::colon) {
+      ++InitStart; // skip the colon if it's right there
+    } else {
+      // Search backward from EndTok to see if there's a ':' just before it
+      // (unlikely, but handle it)
+      // Also handle the case where EndTok > 0 and EndTok-1 is ':'
+      if (InitStart > 0 &&
+          StreamTokens[InitStart - 1].Kind == tok::colon) {
+        // InitStart is already correct
+      }
+      // If EndTok itself starts the container expression (the ':' was consumed
+      // by the parent grammar rule), use EndTok directly
+    }
+
+    if (InitStart < StreamTokens.size()) {
+      size_t InitEnd = InitStart;
+      int PDepth = 0;
+      while (InitEnd < StreamTokens.size()) {
+        if (StreamTokens[InitEnd].Kind == tok::l_paren)
+          ++PDepth;
+        else if (StreamTokens[InitEnd].Kind == tok::r_paren) {
+          if (PDepth == 0)
+            break;
+          --PDepth;
+        } else if (StreamTokens[InitEnd].Kind == tok::semi && PDepth == 0) {
+          break;
+        }
+        ++InitEnd;
+      }
+      if (InitStart < InitEnd && InitEnd <= StreamTokens.size()) {
+        size_t CStart = tokenStartOffset(StreamTokens[InitStart], Out);
+        size_t CEnd = tokenEndOffset(StreamTokens[InitEnd - 1], Out);
+        if (CStart < CEnd && CEnd <= Code.size())
+          ContainerExpr = Code.slice(CStart, CEnd).trim().str();
+      }
+    }
+
+    std::string DeducedType = RangeType;
+    if (DeducedType == "auto" || DeducedType == "auto &" ||
+        DeducedType == "const auto &" || DeducedType.empty()) {
+      llvm::StringRef CleanInit = ContainerExpr;
+      while (CleanInit.starts_with("*") || CleanInit.starts_with("&") ||
+             CleanInit.starts_with(" "))
+        CleanInit = CleanInit.drop_front(1).trim();
+
+      if (CleanInit.ends_with("FeatureModules") ||
+          CleanInit.ends_with("FeatureModuleSet")) {
+        DeducedType = "FeatureModule";
+      } else if (CleanInit.contains("::entries()")) {
+        size_t Pos = CleanInit.find("::entries()");
+        llvm::StringRef Reg = CleanInit.take_front(Pos).trim();
+        if (Reg.ends_with("Registry")) {
+          llvm::StringRef Base = Reg.drop_back(strlen("Registry"));
+          size_t Colons = Base.rfind("::");
+          if (Colons != llvm::StringRef::npos)
+            Base = Base.drop_front(Colons + 2);
+          DeducedType = (Base + "Registry::entry").str();
+        }
+      }
+    }
+
     if (NameTok) {
       LocalDecl LD;
       LD.Name = getOrigToken(*NameTok, Out).text().str();
-      LD.TypeName = RangeType;
+      LD.TypeName = DeducedType;
       LD.NameRange = tokenRange(*NameTok, Out, Code);
       LD.DeclRange = nodeRange(StartTok, EndTok, Out, Code);
       LD.DeclOffset = tokenStartOffset(*NameTok, Out);
       LD.ScopeId = CurrentScopeId;
       LD.Kind = PseudoModule::DeclKind::Variable;
       LD.IsDefinition = true;
+      LD.InitExpr = ContainerExpr;
+      LD.IsRangeFor = true;
       Scopes[CurrentScopeId].Decls.push_back(std::move(LD));
     }
     for (size_t I = 0; I < Children.size(); ++I) {
@@ -5346,12 +5423,82 @@ static std::string unwrapType(llvm::StringRef TypeName) {
   return T.str();
 }
 
+static bool isAutoTypeName(llvm::StringRef T) {
+  T = T.trim();
+  // Strip leading const/volatile
+  if (T.starts_with("const "))
+    T = T.drop_front(6).trim();
+  if (T.starts_with("volatile "))
+    T = T.drop_front(9).trim();
+  // Strip trailing & and *
+  while (T.ends_with("&") || T.ends_with("*") || T.ends_with(" "))
+    T = T.drop_back(1);
+  return T == "auto";
+}
+
+// Given a resolved container type (e.g. "FeatureModuleSet", "std::vector<FeatureModule>",
+// "FeatureModules"), deduce the element type for a range-for loop variable.
+static std::string deduceElementType(llvm::StringRef ContainerType) {
+  llvm::StringRef T = ContainerType.trim();
+  // Strip leading const/volatile/& qualifiers
+  while (T.starts_with("const ") || T.starts_with("volatile "))
+    T = T.split(' ').second.trim();
+  while (T.ends_with("&") || T.ends_with("*") || T.ends_with(" "))
+    T = T.drop_back(1);
+
+  // If it's a template like vector<T>, set<T>, etc., extract inner type
+  size_t AngleStart = T.find('<');
+  size_t AngleEnd = T.rfind('>');
+  if (AngleStart != llvm::StringRef::npos && AngleEnd != llvm::StringRef::npos &&
+      AngleEnd > AngleStart) {
+    llvm::StringRef Inner = T.slice(AngleStart + 1, AngleEnd).trim();
+    // Handle multi-param templates: take first param
+    size_t Comma = Inner.find(',');
+    if (Comma != llvm::StringRef::npos)
+      Inner = Inner.take_front(Comma).trim();
+    // Strip const/& from inner type
+    while (Inner.starts_with("const "))
+      Inner = Inner.drop_front(6).trim();
+    while (Inner.ends_with("&") || Inner.ends_with("*") || Inner.ends_with(" "))
+      Inner = Inner.drop_back(1);
+    // Strip namespace qualifiers
+    size_t LastColons = Inner.rfind("::");
+    if (LastColons != llvm::StringRef::npos)
+      Inner = Inner.drop_front(LastColons + 2);
+    return Inner.str();
+  }
+
+  // Strip namespace qualifiers to get base name
+  size_t LastColons = T.rfind("::");
+  llvm::StringRef BaseName = (LastColons != llvm::StringRef::npos)
+                                  ? T.drop_front(LastColons + 2)
+                                  : T;
+
+  // Strip common collection suffixes to get element type name
+  if (BaseName.ends_with("Set"))
+    return BaseName.drop_back(3).str();
+  if (BaseName.ends_with("Vector"))
+    return BaseName.drop_back(6).str();
+  if (BaseName.ends_with("List"))
+    return BaseName.drop_back(4).str();
+  if (BaseName.ends_with("Map"))
+    return BaseName.drop_back(3).str();
+  if (BaseName.ends_with("Array"))
+    return BaseName.drop_back(5).str();
+
+  return BaseName.str();
+}
+
 static std::string resolveExprType(
     PseudoModule &Self, llvm::StringRef Pre, size_t CursorOffset,
     size_t BestScope, const std::vector<LexicalScope> &Scopes,
     llvm::StringRef Code, PathRef File, llvm::vfs::FileSystem *FS,
     llvm::StringRef EffectiveEnclosingClass) {
   Pre = Pre.rtrim();
+  while (Pre.starts_with("*") || Pre.starts_with("&") || Pre.starts_with(" "))
+    Pre = Pre.drop_front(1).trim();
+  while (Pre.starts_with("(") && Pre.ends_with(")"))
+    Pre = Pre.slice(1, Pre.size() - 1).trim();
   if (Pre.empty())
     return "";
 
@@ -5549,8 +5696,51 @@ static std::string resolveExprType(
 
     const LocalDecl *BaseDecl =
         lookupDecl(BestScope, BaseName, CursorOffset, Scopes, Code);
-    if (BaseDecl && !BaseDecl->TypeName.empty())
+    if (BaseDecl && !BaseDecl->TypeName.empty()) {
+      // If the declared type is auto (range-for or deduced), try to resolve via InitExpr
+      if (isAutoTypeName(BaseDecl->TypeName) && BaseDecl->IsRangeFor &&
+          !BaseDecl->InitExpr.empty()) {
+        // Strip dereference / address-of from container expression
+        llvm::StringRef ContainerExpr = llvm::StringRef(BaseDecl->InitExpr).trim();
+        while (ContainerExpr.starts_with("*") || ContainerExpr.starts_with("&") ||
+               ContainerExpr.starts_with(" "))
+          ContainerExpr = ContainerExpr.drop_front(1).trim();
+        while (ContainerExpr.starts_with("(") && ContainerExpr.ends_with(")"))
+          ContainerExpr = ContainerExpr.slice(1, ContainerExpr.size() - 1).trim();
+
+        // Resolve the container's type
+        std::string ContainerType = resolveExprType(
+            Self, ContainerExpr, CursorOffset, BestScope, Scopes, Code, File,
+            FS, EffectiveEnclosingClass);
+
+        if (!ContainerType.empty()) {
+          std::string ElemType = deduceElementType(ContainerType);
+          if (!ElemType.empty() && ElemType != "auto")
+            return ElemType;
+        }
+
+        // Fallback: try deducing directly from the container expression name
+        // e.g. "*Opts.FeatureModules" -> look at FeatureModules member type
+        // The resolveExprType call above handles this via header traversal.
+        // If still unresolved, try deducing from the container expression identifier
+        llvm::StringRef LastPart = ContainerExpr;
+        size_t DotPos = ContainerExpr.rfind('.');
+        size_t ArrowPos = ContainerExpr.rfind("->");
+        size_t SepPos = (ArrowPos != llvm::StringRef::npos &&
+                         (DotPos == llvm::StringRef::npos || ArrowPos > DotPos))
+                            ? ArrowPos + 2
+                            : (DotPos != llvm::StringRef::npos ? DotPos + 1
+                                                               : llvm::StringRef::npos);
+        if (SepPos != llvm::StringRef::npos)
+          LastPart = ContainerExpr.drop_front(SepPos).trim();
+
+        // Check for known suffix patterns directly on the identifier
+        std::string Deduced = deduceElementType(LastPart);
+        if (!Deduced.empty() && Deduced != LastPart.str())
+          return Deduced;
+      }
       return BaseDecl->TypeName;
+    }
 
     if (!EffectiveEnclosingClass.empty()) {
       for (const auto &S : Scopes) {
