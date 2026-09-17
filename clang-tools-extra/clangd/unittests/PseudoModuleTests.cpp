@@ -2784,6 +2784,86 @@ TEST(PseudoModuleTest, ClangdServerLine359IntegrationGTD) {
   EXPECT_EQ(LocSecondProv->front().PreferredDeclaration.range.start, Code.point("provParam"));
 }
 
+TEST(PseudoModuleTest, PosixPathStrGTD) {
+  MockFS FS;
+  auto CDB = std::make_unique<MockCompilationDatabase>();
+
+  std::string H1 = testPath("H1.h");
+  std::string H2 = testPath("H2.h");
+  std::string H3 = testPath("H3.h");
+  std::string H4 = testPath("H4.h");
+  std::string SmallStringH = testPath("llvm/ADT/SmallString.h");
+  std::string SStreamH = testPath("sstream");
+  std::string SourceFile = testPath("ClangdServer.cpp");
+
+  FS.Files[H1] = "#include \"H2.h\"\n";
+  FS.Files[H2] = "#include \"H3.h\"\n";
+  FS.Files[H3] = "#include \"H4.h\"\n";
+  FS.Files[H4] = "#include \"llvm/ADT/SmallString.h\"\n";
+
+  FS.Files[SmallStringH] = R"cpp(
+    namespace llvm {
+    template <unsigned N>
+    class SmallString {
+    public:
+      StringRef str() const;
+    };
+    }
+  )cpp";
+
+  FS.Files[SStreamH] = R"cpp(
+    namespace std {
+    class stringstream {
+    public:
+      string str() const;
+    };
+    }
+  )cpp";
+
+  PseudoModule Mod;
+  Mod.setFSForTesting(&FS);
+  Mod.setCompilationDatabaseForTesting(CDB.get());
+
+  Annotations Code(R"cpp(
+    #include "H1.h"
+    #include "sstream"
+    namespace clang {
+    namespace clangd {
+    class ClangdServer {
+      struct Impl {
+        void operator()(llvm::StringRef File) {
+          llvm::SmallString<256> PosixPath;
+          PosixPath.$target^str();
+        }
+      };
+    };
+    }
+    }
+  )cpp");
+
+  auto Loc = Mod.locateSymbolAt(SourceFile, Code.code(), Code.point("target"));
+  ASSERT_TRUE(Loc && !Loc->empty()) << (Loc ? "empty" : llvm::toString(Loc.takeError()));
+  EXPECT_EQ(Loc->front().Name, "str");
+  EXPECT_TRUE(llvm::StringRef(Loc->front().PreferredDeclaration.uri.file()).ends_with("SmallString.h"))
+      << "Got: " << Loc->front().PreferredDeclaration.uri.file();
+
+  auto Hover = Mod.getHover(SourceFile, Code.code(), Code.point("target"));
+  ASSERT_TRUE(Hover && Hover->has_value());
+  EXPECT_TRUE(llvm::StringRef((*Hover)->contents.value).contains("SmallString"));
+
+  // Verify that an unknown receiver type or unmatched method NEVER jumps to a random std implementation
+  Annotations UnknownCode(R"cpp(
+    #include "sstream"
+    void bar() {
+      UnknownType Var;
+      Var.$target^str();
+    }
+  )cpp");
+  auto UnknownLoc = Mod.locateSymbolAt(SourceFile, UnknownCode.code(), UnknownCode.point("target"));
+  EXPECT_TRUE(!UnknownLoc || UnknownLoc->empty());
+}
+
+
 } // namespace
 } // namespace clangd
 } // namespace clang
