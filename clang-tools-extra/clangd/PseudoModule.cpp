@@ -1662,8 +1662,205 @@ void buildScopes(const pseudo::ForestNode *N, pseudo::Token::Index End,
         }
       }
 
+      // Deduce auto TypeName from simple "= VarName" initializer (e.g. auto X = Y;)
+      // This handles cases like: auto CodeCompleteOpts = Opts;
+      if (LD.TypeName.empty() || LD.TypeName == "auto") {
+        // Find '=' token and check if it's followed by a single identifier
+        for (size_t I = 0; I < NodeTokens.size(); ++I) {
+          if (NodeTokens[I].Kind == tok::equal) {
+            // Collect identifier tokens after '=', skip any '&' or '*'
+            size_t J = I + 1;
+            while (J < NodeTokens.size() &&
+                   (NodeTokens[J].Kind == tok::amp ||
+                    NodeTokens[J].Kind == tok::star))
+              ++J;
+            if (J < NodeTokens.size() &&
+                (NodeTokens[J].Kind == tok::raw_identifier ||
+                 NodeTokens[J].Kind == tok::identifier)) {
+              llvm::StringRef RhsName = getOrigToken(NodeTokens[J], Out).text();
+              // Only do this if no further complex expression (no '(', '.', etc.)
+              bool SimpleRhs = true;
+              for (size_t K = J + 1; K < NodeTokens.size(); ++K) {
+                tok::TokenKind TK = NodeTokens[K].Kind;
+                if (TK == tok::l_paren || TK == tok::period ||
+                    TK == tok::arrow || TK == tok::l_brace) {
+                  SimpleRhs = false;
+                  break;
+                }
+              }
+              if (SimpleRhs && !RhsName.empty()) {
+                size_t EqOffset = tokenStartOffset(NodeTokens[I], Out);
+                const LocalDecl *RhsDecl = lookupDecl(
+                    CurrentScopeId, RhsName, EqOffset, Scopes, Code);
+                if (RhsDecl && !RhsDecl->TypeName.empty() &&
+                    RhsDecl->TypeName != "auto")
+                  LD.TypeName = RhsDecl->TypeName;
+              }
+            }
+            break;
+          }
+        }
+      }
+
       Scopes[CurrentScopeId].Decls.push_back(std::move(LD));
     }
+    // Do NOT return here — fall through to recurse into children.
+    // This is critical for lambda initializers: `auto Task = [...](...) {...};`
+    // must recurse into the lambda-expression child node.
+  }
+
+  // 6b. Lambda expression: [captures](params) { body }
+  // Grammar: lambda-expression := lambda-introducer lambda-declarator_opt compound-statement
+  if (Sym == pseudo::cxx::Symbol::lambda_expression) {
+    size_t NewScopeId = Scopes.size();
+    LexicalScope S;
+    S.Id = NewScopeId;
+    S.ParentId = CurrentScopeId;
+    S.Kind = ScopeKind::Block;
+    S.StartOffset = tokenStartOffset(Out.ParseableStream.tokens()[StartTok], Out);
+    S.EndOffset = tokenEndOffset(Out.ParseableStream.tokens()[EndTok - 1], Out);
+    S.ScopeRange = nodeRange(StartTok, EndTok, Out, Code);
+    S.EnclosingClass = EnclosingClass;
+    Scopes[CurrentScopeId].Children.push_back(NewScopeId);
+    Scopes.push_back(std::move(S));
+
+    size_t SavedScope = CurrentScopeId;
+    CurrentScopeId = NewScopeId;
+
+    // Parse capture list: tokens between '[' and ']'
+    // Captures: simple-capture (IDENTIFIER), init-capture (IDENTIFIER = ...)
+    {
+      bool InCaptures = false;
+      int BracketDepth = 0;
+      // State for current capture being parsed
+      const pseudo::Token *CaptureName = nullptr;
+      bool IsInitCapture = false; // has '=' in current capture
+      // Identifier seen after '=' in init-capture (RHS name)
+      const pseudo::Token *RhsNameTok = nullptr;
+
+      for (size_t I = 0; I < NodeTokens.size(); ++I) {
+        tok::TokenKind K = NodeTokens[I].Kind;
+        if (!InCaptures) {
+          if (K == tok::l_square) {
+            InCaptures = true;
+            BracketDepth = 1;
+          }
+          continue;
+        }
+        if (K == tok::l_square) {
+          ++BracketDepth;
+          continue;
+        }
+        if (K == tok::r_square) {
+          --BracketDepth;
+          if (BracketDepth <= 0) {
+            // End of capture list — emit last capture if any
+            if (CaptureName) {
+              llvm::StringRef CaptName = getOrigToken(*CaptureName, Out).text();
+              LocalDecl LD;
+              LD.Name = CaptName.str();
+              LD.NameRange = tokenRange(*CaptureName, Out, Code);
+              LD.DeclRange = LD.NameRange;
+              LD.DeclOffset = tokenStartOffset(*CaptureName, Out);
+              LD.ScopeId = NewScopeId;
+              LD.Kind = PseudoModule::DeclKind::Variable;
+              LD.IsDefinition = true;
+
+              if (IsInitCapture && RhsNameTok) {
+                // e.g. CB = std::move(CB) — RHS is the outer CB
+                llvm::StringRef RhsName = getOrigToken(*RhsNameTok, Out).text();
+                const LocalDecl *OuterDecl = lookupDecl(
+                    SavedScope, RhsName, LD.DeclOffset, Scopes, Code);
+                if (OuterDecl && !OuterDecl->TypeName.empty())
+                  LD.TypeName = OuterDecl->TypeName;
+              } else {
+                // Simple capture: look up name in parent scope
+                const LocalDecl *OuterDecl = lookupDecl(
+                    SavedScope, CaptName, LD.DeclOffset, Scopes, Code);
+                if (OuterDecl && !OuterDecl->TypeName.empty())
+                  LD.TypeName = OuterDecl->TypeName;
+              }
+              Scopes[NewScopeId].Decls.push_back(std::move(LD));
+              CaptureName = nullptr;
+              IsInitCapture = false;
+              RhsNameTok = nullptr;
+            }
+            break;
+          }
+          continue;
+        }
+        if (!InCaptures || BracketDepth <= 0)
+          continue;
+
+        // Separator between captures
+        if (K == tok::comma) {
+          if (CaptureName) {
+            llvm::StringRef CaptName = getOrigToken(*CaptureName, Out).text();
+            LocalDecl LD;
+            LD.Name = CaptName.str();
+            LD.NameRange = tokenRange(*CaptureName, Out, Code);
+            LD.DeclRange = LD.NameRange;
+            LD.DeclOffset = tokenStartOffset(*CaptureName, Out);
+            LD.ScopeId = NewScopeId;
+            LD.Kind = PseudoModule::DeclKind::Variable;
+            LD.IsDefinition = true;
+
+            if (IsInitCapture && RhsNameTok) {
+              llvm::StringRef RhsName = getOrigToken(*RhsNameTok, Out).text();
+              const LocalDecl *OuterDecl = lookupDecl(
+                  SavedScope, RhsName, LD.DeclOffset, Scopes, Code);
+              if (OuterDecl && !OuterDecl->TypeName.empty())
+                LD.TypeName = OuterDecl->TypeName;
+            } else {
+              const LocalDecl *OuterDecl = lookupDecl(
+                  SavedScope, CaptName, LD.DeclOffset, Scopes, Code);
+              if (OuterDecl && !OuterDecl->TypeName.empty())
+                LD.TypeName = OuterDecl->TypeName;
+            }
+            Scopes[NewScopeId].Decls.push_back(std::move(LD));
+          }
+          CaptureName = nullptr;
+          IsInitCapture = false;
+          RhsNameTok = nullptr;
+          continue;
+        }
+
+        // Skip '&' prefix before capture name
+        if (K == tok::amp || K == tok::star)
+          continue;
+        // Skip '=' (capture-default) or '...'
+        if (K == tok::ellipsis || K == tok::kw_this)
+          continue;
+
+        if (K == tok::raw_identifier || K == tok::identifier) {
+          llvm::StringRef Word = getOrigToken(NodeTokens[I], Out).text();
+          if (Word == "this")
+            continue;
+          if (!CaptureName) {
+            CaptureName = &NodeTokens[I];
+          } else if (IsInitCapture && !RhsNameTok) {
+            // After '=', we want the first identifier (might be the RHS var, e.g. CB in CB = std::move(CB))
+            RhsNameTok = &NodeTokens[I];
+          }
+          continue;
+        }
+
+        if (K == tok::equal && CaptureName) {
+          IsInitCapture = true;
+          continue;
+        }
+      }
+    }
+
+    // Recurse into children (lambda_declarator for params, compound_statement for body)
+    auto Children = N->elements();
+    for (size_t I = 0; I < Children.size(); ++I) {
+      pseudo::Token::Index ChildEnd =
+          (I + 1 == Children.size()) ? End : Children[I + 1]->startTokenIndex();
+      buildScopes(Children[I], ChildEnd, Out, Code, Scopes, CurrentScopeId,
+                  EnclosingClass);
+    }
+    CurrentScopeId = SavedScope;
     return;
   }
 
@@ -3120,6 +3317,12 @@ static const LocalDecl *resolveTargetDecl(
               CS.Name == LhsName) {
             for (const auto &D : CS.Decls) {
               if (D.Name == TargetName) {
+                // When resolving Namespace::Name, skip class member decls.
+                // E.g. clangd::signatureHelp should not match
+                // ClangdServer::signatureHelp stored in the clangd scope.
+                if (CS.Kind == ScopeKind::Namespace &&
+                    (D.IsMember || !D.EnclosingClass.empty()))
+                  continue;
                 if (!ExpectsType || PseudoModule::isTypeDecl(D.Kind)) {
                   TargetDecl = &D;
                   break;
@@ -3455,13 +3658,110 @@ PseudoModule::locateSymbolAt(PathRef File, llvm::StringRef Code, Position Pos) {
     return TargetRange;
   };
 
+  // Strictly find a template function definition (not a call/declaration).
+  // Requires: 'template' on a preceding line, 'FnName(' word-boundary match,
+  // and after closing ')' of param list comes '{' or 'noexcept'/'constexpr'
+  // qualifiers then '{'. Rejects any match followed by ';' (forward decl / call).
+  auto findFunctionDefinition = [&](llvm::StringRef HeaderPath,
+                                    llvm::StringRef FnName) -> Range {
+    Range Empty{Position{0, 0}, Position{0, 0}};
+    auto Buf = FS->getBufferForFile(HeaderPath);
+    if (!Buf)
+      return Empty;
+    llvm::StringRef Content = (*Buf)->getBuffer();
+    size_t SearchPos = 0;
+    while ((SearchPos = Content.find(FnName, SearchPos)) !=
+           llvm::StringRef::npos) {
+      size_t MatchPos = SearchPos;
+      SearchPos += FnName.size();
+
+      // Word boundary check before
+      bool WordBefore = MatchPos == 0 ||
+          (!llvm::isAlnum(Content[MatchPos - 1]) &&
+           Content[MatchPos - 1] != '_');
+      if (!WordBefore)
+        continue;
+
+      // Word boundary check after
+      if (SearchPos < Content.size() &&
+          (llvm::isAlnum(Content[SearchPos]) || Content[SearchPos] == '_'))
+        continue;
+
+      // Must not be on a preprocessor/comment line
+      size_t LineStart = Content.rfind('\n', MatchPos);
+      LineStart = (LineStart == llvm::StringRef::npos) ? 0 : LineStart + 1;
+      llvm::StringRef LinePrefix = Content.slice(LineStart, MatchPos).ltrim();
+      if (LinePrefix.starts_with("#") || LinePrefix.starts_with("//") ||
+          LinePrefix.starts_with("/*") || LinePrefix.starts_with("*"))
+        continue;
+
+      // Must be followed by '(' (function call/def)
+      size_t After = SearchPos;
+      while (After < Content.size() && llvm::isSpace(Content[After]))
+        ++After;
+      if (After >= Content.size() || Content[After] != '(')
+        continue;
+
+      // Scan past parameter list to find matching ')'
+      size_t ParenDepth = 0;
+      size_t ParenEnd = After;
+      while (ParenEnd < Content.size()) {
+        if (Content[ParenEnd] == '(') ++ParenDepth;
+        else if (Content[ParenEnd] == ')') {
+          --ParenDepth;
+          if (ParenDepth == 0) { ++ParenEnd; break; }
+        }
+        ++ParenEnd;
+      }
+
+      // After ')': skip whitespace and qualifiers (noexcept, constexpr, const)
+      // then check for '{' (body). If we see ';', it's a call or forward decl.
+      size_t BodyPos = ParenEnd;
+      while (BodyPos < Content.size() && llvm::isSpace(Content[BodyPos]))
+        ++BodyPos;
+      // Skip qualifiers like noexcept(...), -> RetType, const, constexpr
+      bool FoundBody = false;
+      size_t ScanPos = BodyPos;
+      // Scan up to the end of the line or a few lines to find '{' or ';'
+      size_t ScanEnd = std::min(Content.size(), ScanPos + 200);
+      while (ScanPos < ScanEnd) {
+        char C = Content[ScanPos];
+        if (C == '{') { FoundBody = true; break; }
+        if (C == ';') break; // forward decl or call statement
+        ++ScanPos;
+      }
+      if (!FoundBody)
+        continue;
+
+      // Require 'template' to appear on one of the preceding 5 lines
+      bool HasTemplate = false;
+      size_t PrevLine = MatchPos;
+      for (int LineCount = 0; LineCount < 5 && PrevLine > 0; ++LineCount) {
+        size_t PL = Content.rfind('\n', PrevLine - 1);
+        size_t PLS = (PL == llvm::StringRef::npos) ? 0 : PL + 1;
+        llvm::StringRef PrevLineStr = Content.slice(PLS, PrevLine).ltrim();
+        if (PrevLineStr.starts_with("template")) {
+          HasTemplate = true;
+          break;
+        }
+        PrevLine = PLS;
+      }
+      if (!HasTemplate)
+        continue;
+
+      return Range{offsetToPosition(Content, MatchPos),
+                   offsetToPosition(Content, MatchPos + FnName.size())};
+    }
+    return Empty;
+  };
+
   auto findStdFunction = [&](llvm::StringRef FnName) -> std::pair<std::string, Range> {
     std::string UtilHeader = findUtilityHeader();
     if (UtilHeader.empty())
       return {"", Range{Position{0, 0}, Position{0, 0}}};
 
-    // 1. Check if defined in UtilHeader itself
-    Range R = findSymbolRangeInFile(UtilHeader, FnName);
+    // 1. Check if defined in UtilHeader itself (strict definition check)
+    Range R = findFunctionDefinition(UtilHeader, FnName);
     if (R.start.line != 0 || R.start.character != 0 ||
         R.end.line != 0 || R.end.character != 0) {
       return {UtilHeader, R};
@@ -3475,7 +3775,7 @@ PseudoModule::locateSymbolAt(PathRef File, llvm::StringRef Code, Position Pos) {
         if (Inc.Written.find(FnName) != llvm::StringRef::npos) {
           std::string SubH = resolveHeader(Inc, UtilDir, IncDirs, *FS);
           if (!SubH.empty()) {
-            Range SubR = findSymbolRangeInFile(SubH, FnName);
+            Range SubR = findFunctionDefinition(SubH, FnName);
             if (SubR.start.line != 0 || SubR.start.character != 0 ||
                 SubR.end.line != 0 || SubR.end.character != 0) {
               return {SubH, SubR};
@@ -3486,13 +3786,20 @@ PseudoModule::locateSymbolAt(PathRef File, llvm::StringRef Code, Position Pos) {
       for (const auto &Inc : Info->Includes) {
         std::string SubH = resolveHeader(Inc, UtilDir, IncDirs, *FS);
         if (!SubH.empty()) {
-          Range SubR = findSymbolRangeInFile(SubH, FnName);
+          Range SubR = findFunctionDefinition(SubH, FnName);
           if (SubR.start.line != 0 || SubR.start.character != 0 ||
               SubR.end.line != 0 || SubR.end.character != 0) {
             return {SubH, SubR};
           }
         }
       }
+    }
+    // 3. Fallback: use general text search (handles environments where utility
+    //    headers only provide forward declarations, e.g. in tests).
+    Range Fallback = findSymbolRangeInFile(UtilHeader, FnName);
+    if (Fallback.start.line != 0 || Fallback.start.character != 0 ||
+        Fallback.end.line != 0 || Fallback.end.character != 0) {
+      return {UtilHeader, Fallback};
     }
     return {"", Range{Position{0, 0}, Position{0, 0}}};
   };
