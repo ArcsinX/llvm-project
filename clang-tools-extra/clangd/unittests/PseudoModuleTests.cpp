@@ -3141,11 +3141,29 @@ TEST(PseudoModuleTest, ShowASTRangeSelection) {
 static std::string findRepoSourceFile(llvm::StringRef RelativePath) {
   if (llvm::sys::fs::exists(RelativePath))
     return RelativePath.str();
+
+  // Search relative to __FILE__
   llvm::SmallString<256> Path(__FILE__);
+  llvm::sys::path::remove_filename(Path);
   llvm::sys::path::append(Path, llvm::sys::path::Style::posix,
-                          "../../../../", RelativePath);
+                          "../../../", RelativePath);
+  llvm::sys::path::remove_dots(Path, /*remove_dot_dot=*/true);
   if (llvm::sys::fs::exists(Path))
     return std::string(Path.str());
+
+  // Search relative to current working directory moving upwards
+  llvm::SmallString<256> Cwd;
+  if (!llvm::sys::fs::current_path(Cwd)) {
+    for (int Up = 0; Up < 8; ++Up) {
+      llvm::SmallString<256> Cand = Cwd;
+      llvm::sys::path::append(Cand, RelativePath);
+      llvm::sys::path::remove_dots(Cand, /*remove_dot_dot=*/true);
+      if (llvm::sys::fs::exists(Cand))
+        return std::string(Cand.str());
+      llvm::sys::path::append(Cwd, "..");
+    }
+  }
+
   return "";
 }
 
