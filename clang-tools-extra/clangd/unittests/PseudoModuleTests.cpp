@@ -2375,6 +2375,206 @@ TEST(PseudoModuleTest, SemaPrintingPolicyGTD) {
   }
 }
 
+TEST(PseudoModuleTest, ClangdServerDraftMgrGetDraftGTD) {
+  MockFS FS;
+  auto CDB = std::make_unique<MockCompilationDatabase>();
+
+  std::string DraftStoreH = testPath("DraftStore.h");
+  std::string ClangdServerH = testPath("ClangdServer.h");
+  std::string SourceFile = testPath("ClangdServer.cpp");
+
+  FS.Files[DraftStoreH] = R"cpp(
+    namespace clang {
+    namespace clangd {
+    class DraftStore {
+    public:
+      int getDraft(const char *File) const;
+    };
+    }
+    }
+  )cpp";
+
+  FS.Files[ClangdServerH] = R"cpp(
+    #include "DraftStore.h"
+    namespace clang {
+    namespace clangd {
+    class ClangdServer {
+    public:
+      int getDraft(const char *File) const;
+      void reparseOpenFilesIfNeeded();
+    private:
+      DraftStore DraftMgr;
+    };
+    }
+    }
+  )cpp";
+
+  PseudoModule Mod;
+  Mod.setFSForTesting(&FS);
+  Mod.setCompilationDatabaseForTesting(CDB.get());
+
+  Annotations Code(R"cpp(
+    #include "ClangdServer.h"
+    namespace clang {
+    namespace clangd {
+    int ClangdServer::getDraft(const char *File) const {
+      return DraftMgr.$callGetDraft^getDraft(File);
+    }
+    }
+    }
+  )cpp");
+
+  auto Loc = Mod.locateSymbolAt(SourceFile, Code.code(), Code.point("callGetDraft"));
+  EXPECT_TRUE(bool(Loc)) << (Loc ? "" : llvm::toString(Loc.takeError()));
+  if (Loc && !Loc->empty()) {
+    EXPECT_EQ(Loc->front().Name, "getDraft");
+    EXPECT_TRUE(llvm::StringRef(Loc->front().PreferredDeclaration.uri.file())
+                    .ends_with("DraftStore.h"))
+        << "Expected DraftStore.h, got " << Loc->front().PreferredDeclaration.uri.file();
+  } else {
+    ADD_FAILURE() << "Loc is empty";
+  }
+}
+
+TEST(PseudoModuleTest, StdMoveJumpsToFunctionNotInclude) {
+  MockFS FS;
+  auto CDB = std::make_unique<MockCompilationDatabase>();
+
+  std::string UtilityH = testPath("utility");
+  std::string BitsMoveH = testPath("bits/move.h");
+  std::string SourceFile = testPath("test.cpp");
+
+  FS.Files[BitsMoveH] = R"cpp(
+    namespace std {
+    template <typename T>
+    constexpr T&& move(T& t) noexcept {
+      return static_cast<T&&>(t);
+    }
+    }
+  )cpp";
+
+  FS.Files[UtilityH] = R"cpp(
+    #include <bits/move.h>
+  )cpp";
+
+  PseudoModule Mod;
+  Mod.setFSForTesting(&FS);
+  Mod.setCompilationDatabaseForTesting(CDB.get());
+
+  Annotations Code(R"cpp(
+    #include <utility>
+    void test() {
+      int x = 42;
+      int y = std::$moveCall^move(x);
+    }
+  )cpp");
+
+  auto Loc = Mod.locateSymbolAt(SourceFile, Code.code(), Code.point("moveCall"));
+  EXPECT_TRUE(bool(Loc)) << (Loc ? "" : llvm::toString(Loc.takeError()));
+  ASSERT_TRUE(Loc && !Loc->empty());
+  EXPECT_EQ(Loc->front().Name, "move");
+  EXPECT_TRUE(llvm::StringRef(Loc->front().PreferredDeclaration.uri.file()).ends_with("bits/move.h"))
+      << "Expected bits/move.h, got " << Loc->front().PreferredDeclaration.uri.file();
+  EXPECT_NE(Loc->front().PreferredDeclaration.range.start.line, 0)
+      << "Should not jump to line 0 (#include directive)";
+}
+
+TEST(PseudoModuleTest, ClangdServerCallbacksTypeGTD) {
+  MockFS FS;
+  auto CDB = std::make_unique<MockCompilationDatabase>();
+
+  std::string ClangdServerH = testPath("ClangdServer.h");
+  std::string SourceFile = testPath("ClangdServer.cpp");
+
+  FS.Files[ClangdServerH] = R"cpp(
+    namespace clang {
+    namespace clangd {
+    class ClangdServer {
+    public:
+      class Callbacks {
+      public:
+        virtual ~Callbacks() = default;
+      };
+      ClangdServer(int Opts, Callbacks *Callbacks = nullptr);
+    };
+    }
+    }
+  )cpp";
+
+  PseudoModule Mod;
+  Mod.setFSForTesting(&FS);
+  Mod.setCompilationDatabaseForTesting(CDB.get());
+
+  Annotations Code(R"cpp(
+    #include "ClangdServer.h"
+    namespace clang {
+    namespace clangd {
+    ClangdServer::ClangdServer(int Opts, Callbacks *Callbacks) {}
+
+    struct Impl {
+      ClangdServer::$qualCallbacks^Callbacks *Publish;
+    };
+    }
+    }
+  )cpp");
+
+  auto Loc = Mod.locateSymbolAt(SourceFile, Code.code(), Code.point("qualCallbacks"));
+  EXPECT_TRUE(bool(Loc)) << (Loc ? "" : llvm::toString(Loc.takeError()));
+  ASSERT_TRUE(Loc && !Loc->empty());
+  EXPECT_EQ(Loc->front().Name, "Callbacks");
+  EXPECT_TRUE(llvm::StringRef(Loc->front().PreferredDeclaration.uri.file()).ends_with("ClangdServer.h"))
+      << "Expected ClangdServer.h, got " << Loc->front().PreferredDeclaration.uri.file();
+  EXPECT_NE(Loc->front().PreferredDeclaration.uri.file(), SourceFile);
+}
+
+TEST(PseudoModuleTest, StringRefInLambdaParamGTD) {
+  MockFS FS;
+  auto CDB = std::make_unique<MockCompilationDatabase>();
+
+  std::string StringRefH = testPath("llvm/ADT/StringRef.h");
+  std::string ConfigH = testPath("Config.h");
+  std::string SourceFile = testPath("ClangdServer.cpp");
+
+  FS.Files[StringRefH] = R"cpp(
+    namespace llvm {
+    class StringRef {
+    public:
+      StringRef();
+    };
+    }
+  )cpp";
+
+  FS.Files[ConfigH] = R"cpp(
+    #include "llvm/ADT/StringRef.h"
+    #include <vector>
+    #include <functional>
+    struct Config {
+      std::vector<std::function<bool(llvm::StringRef)>> IgnoreHeader;
+    };
+  )cpp";
+
+  PseudoModule Mod;
+  Mod.setFSForTesting(&FS);
+  Mod.setCompilationDatabaseForTesting(CDB.get());
+
+  Annotations Code(R"cpp(
+    #include "Config.h"
+    #include "llvm/ADT/StringRef.h"
+    void test() {
+      auto fn = [](llvm::$strRef^StringRef) {};
+    }
+  )cpp");
+
+  auto Loc = Mod.locateSymbolAt(SourceFile, Code.code(), Code.point("strRef"));
+  EXPECT_TRUE(bool(Loc)) << (Loc ? "" : llvm::toString(Loc.takeError()));
+  ASSERT_TRUE(Loc && !Loc->empty());
+  EXPECT_EQ(Loc->front().Name, "StringRef");
+  EXPECT_TRUE(llvm::StringRef(Loc->front().PreferredDeclaration.uri.file()).ends_with("StringRef.h"))
+      << "Expected StringRef.h, got " << Loc->front().PreferredDeclaration.uri.file();
+  EXPECT_FALSE(llvm::StringRef(Loc->front().PreferredDeclaration.uri.file()).ends_with("Config.h"))
+      << "Must not jump to Config.h!";
+}
+
 } // namespace
 } // namespace clangd
 } // namespace clang
