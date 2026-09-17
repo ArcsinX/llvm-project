@@ -3067,6 +3067,201 @@ TEST(PseudoModuleTest, LambdaInitCaptureSecondFileJumpsToOuter) {
   EXPECT_EQ(LocUse->front().PreferredDeclaration.range.start, Code.point("capFile"));
 }
 
+TEST(PseudoModuleTest, ShowASTBasicInfo) {
+  MockFS FS;
+  auto CDB = std::make_unique<MockCompilationDatabase>();
+  std::string SourceFile = testPath("test.cpp");
+  PseudoModule Mod;
+  Mod.setFSForTesting(&FS);
+  Mod.setCompilationDatabaseForTesting(CDB.get());
+
+  Annotations Code(R"cpp(
+    float root(int *x) {
+      return *x + 1;
+    }
+  )cpp");
+
+  auto ASTRes = Mod.getAST(SourceFile, Code.code());
+  ASSERT_TRUE(bool(ASTRes)) << (ASTRes ? "" : llvm::toString(ASTRes.takeError()));
+  ASSERT_TRUE(bool(*ASTRes));
+  const ASTNode &TU = **ASTRes;
+  EXPECT_EQ(TU.role, "declaration");
+  EXPECT_EQ(TU.kind, "TranslationUnit");
+  ASSERT_FALSE(TU.children.empty());
+
+  const ASTNode &Func = TU.children.front();
+  EXPECT_EQ(Func.role, "declaration");
+  EXPECT_EQ(Func.kind, "Function");
+  EXPECT_EQ(Func.detail, "root");
+
+  ASSERT_GE(Func.children.size(), 2u);
+  const ASTNode &Proto = Func.children[0];
+  EXPECT_EQ(Proto.role, "type");
+  EXPECT_EQ(Proto.kind, "FunctionProto");
+
+  const ASTNode &Body = Func.children[1];
+  EXPECT_EQ(Body.role, "statement");
+  EXPECT_EQ(Body.kind, "Compound");
+  ASSERT_FALSE(Body.children.empty());
+
+  const ASTNode &Ret = Body.children.front();
+  EXPECT_EQ(Ret.role, "statement");
+  EXPECT_EQ(Ret.kind, "Return");
+  ASSERT_FALSE(Ret.children.empty());
+
+  const ASTNode &Op = Ret.children.front();
+  EXPECT_EQ(Op.role, "expression");
+  EXPECT_EQ(Op.kind, "BinaryOperator");
+  EXPECT_EQ(Op.detail, "+");
+}
+
+TEST(PseudoModuleTest, ShowASTRangeSelection) {
+  MockFS FS;
+  auto CDB = std::make_unique<MockCompilationDatabase>();
+  std::string SourceFile = testPath("test.cpp");
+  PseudoModule Mod;
+  Mod.setFSForTesting(&FS);
+  Mod.setCompilationDatabaseForTesting(CDB.get());
+
+  Annotations Code(R"cpp(
+    float root(int *x) {
+      return $[[*x + 1]];
+    }
+  )cpp");
+
+  auto ASTRes = Mod.getAST(SourceFile, Code.code(), Code.range());
+  ASSERT_TRUE(bool(ASTRes)) << (ASTRes ? "" : llvm::toString(ASTRes.takeError()));
+  ASSERT_TRUE(bool(*ASTRes));
+  const ASTNode &Node = **ASTRes;
+  EXPECT_EQ(Node.role, "expression");
+  EXPECT_EQ(Node.kind, "BinaryOperator");
+  EXPECT_EQ(Node.detail, "+");
+}
+
+static std::string findRepoSourceFile(llvm::StringRef RelativePath) {
+  if (llvm::sys::fs::exists(RelativePath))
+    return RelativePath.str();
+  llvm::SmallString<256> Path(__FILE__);
+  llvm::sys::path::append(Path, llvm::sys::path::Style::posix,
+                          "../../../../", RelativePath);
+  if (llvm::sys::fs::exists(Path))
+    return std::string(Path.str());
+  return "";
+}
+
+static void validateASTNodesRecursive(const ASTNode &Node, size_t &NodeCount,
+                                     std::string &Error) {
+  ++NodeCount;
+
+  static const llvm::StringSet<> ValidRoles = {
+      "declaration", "statement", "expression", "type",
+      "specifier",   "base",      "attribute",  "reference"};
+
+  if (Node.role.empty()) {
+    Error = "Empty role in ASTNode kind=" + Node.kind + " detail=" + Node.detail;
+    return;
+  }
+  if (!ValidRoles.contains(Node.role)) {
+    Error = "Invalid role '" + Node.role + "' in ASTNode kind=" + Node.kind;
+    return;
+  }
+  if (Node.kind.empty()) {
+    Error = "Empty kind in ASTNode role=" + Node.role + " detail=" + Node.detail;
+    return;
+  }
+
+  if (Node.role == "type") {
+    static const llvm::StringSet<> ValidTypeKinds = {
+        "Builtin", "Pointer", "LValueReference", "RValueReference",
+        "Qualified", "Record", "FunctionProto", "Auto"};
+    if (!ValidTypeKinds.contains(Node.kind)) {
+      Error = "Unrecognized type kind '" + Node.kind + "' in type node";
+      return;
+    }
+    if (Node.kind != "FunctionProto" && Node.kind != "Pointer" &&
+        Node.kind != "LValueReference" && Node.kind != "RValueReference") {
+      if (Node.detail.empty()) {
+        Error = "Type node with kind '" + Node.kind + "' has empty detail";
+        return;
+      }
+    }
+  }
+
+  if (Node.role == "declaration") {
+    if (Node.kind == "Var" || Node.kind == "ParmVar" || Node.kind == "Field" ||
+        Node.kind == "Function" || Node.kind == "CXXMethod") {
+      bool HasType = llvm::any_of(Node.children, [](const ASTNode &C) {
+        return C.role == "type";
+      }) || !Node.arcana.empty();
+      if (!HasType) {
+        Error = "Declaration node kind=" + Node.kind + " detail=" + Node.detail +
+                " has no associated type";
+        return;
+      }
+    }
+  }
+
+  if (Node.role == "expression") {
+    if (Node.kind == "BinaryOperator" || Node.kind == "UnaryOperator") {
+      if (Node.detail.empty()) {
+        Error = "Operator expr kind=" + Node.kind + " has empty operator detail";
+        return;
+      }
+    }
+    if (Node.kind == "IntegerLiteral" || Node.kind == "FloatingLiteral" ||
+        Node.kind == "StringLiteral" || Node.kind == "DeclRef" ||
+        Node.kind == "Member") {
+      if (Node.detail.empty()) {
+        Error = "Expr kind=" + Node.kind + " has empty detail";
+        return;
+      }
+    }
+  }
+
+  for (const auto &C : Node.children) {
+    validateASTNodesRecursive(C, NodeCount, Error);
+    if (!Error.empty())
+      return;
+  }
+}
+
+TEST(PseudoModuleTest, ValidateASTSemaAndClangdServer) {
+  PseudoModule Mod;
+  Mod.setPseudoOnly(true);
+
+  std::vector<std::string> TargetFiles = {
+      findRepoSourceFile("clang-tools-extra/clangd/ClangdServer.cpp"),
+      findRepoSourceFile("clang/lib/Sema/Sema.cpp"),
+  };
+
+  for (const auto &FilePath : TargetFiles) {
+    ASSERT_FALSE(FilePath.empty()) << "Could not locate target file";
+    auto Buf = llvm::MemoryBuffer::getFile(FilePath);
+    ASSERT_TRUE(bool(Buf)) << "Failed to read file " << FilePath;
+
+    auto ASTRes = Mod.getAST(FilePath, (*Buf)->getBuffer());
+    ASSERT_TRUE(bool(ASTRes))
+        << "Failed to get AST for " << FilePath << ": "
+        << (ASTRes ? "" : llvm::toString(ASTRes.takeError()));
+    ASSERT_TRUE(bool(*ASTRes)) << "Returned null AST for " << FilePath;
+
+    const ASTNode &TU = **ASTRes;
+    EXPECT_EQ(TU.role, "declaration");
+    EXPECT_EQ(TU.kind, "TranslationUnit");
+    EXPECT_FALSE(TU.children.empty())
+        << "Empty children in TranslationUnit for " << FilePath;
+
+    size_t NodeCount = 0;
+    std::string ValidationError;
+    validateASTNodesRecursive(TU, NodeCount, ValidationError);
+
+    EXPECT_TRUE(ValidationError.empty())
+        << "Validation failed in " << FilePath << ": " << ValidationError;
+    EXPECT_GT(NodeCount, 100u)
+        << "Expected rich AST with >100 nodes, got " << NodeCount;
+  }
+}
+
 } // namespace
 } // namespace clangd
 } // namespace clang
