@@ -1319,6 +1319,887 @@ TEST(PseudoModuleTest, ConceptAndConstrainedTemplate) {
   EXPECT_EQ((*Loc2)[0].PreferredDeclaration.range, Code.range("conceptDecl"));
 }
 
+TEST(PseudoModuleTest, HoverBasic) {
+  PseudoModule Mod;
+  std::string File = testPath("hover_test.cpp");
+  Annotations Code(R"cpp(
+    #include <vector>
+
+    class DataService {
+    public:
+      int cacheSize;
+      void sync(int timeout);
+    };
+
+    void run() {
+      $svcUsage[[DataService]] svc;
+      svc.$cacheUsage[[cacheSize]] = 100;
+      svc.$syncUsage[[sync]](5);
+    }
+  )cpp");
+
+  // (a) Hover on DataService
+  auto H1 = Mod.getHover(File, Code.code(), Code.range("svcUsage").start);
+  ASSERT_TRUE(bool(H1)) << llvm::toString(H1.takeError());
+  ASSERT_TRUE(H1->has_value());
+  EXPECT_EQ((*H1)->range, Code.range("svcUsage"));
+  EXPECT_THAT((*H1)->contents.value, testing::HasSubstr("class DataService"));
+
+  // (b) Hover on cacheSize
+  auto H2 = Mod.getHover(File, Code.code(), Code.range("cacheUsage").start);
+  ASSERT_TRUE(bool(H2)) << llvm::toString(H2.takeError());
+  ASSERT_TRUE(H2->has_value());
+  EXPECT_EQ((*H2)->range, Code.range("cacheUsage"));
+  EXPECT_THAT((*H2)->contents.value, testing::HasSubstr("cacheSize"));
+
+  // (c) Hover on sync()
+  auto H3 = Mod.getHover(File, Code.code(), Code.range("syncUsage").start);
+  ASSERT_TRUE(bool(H3)) << llvm::toString(H3.takeError());
+  ASSERT_TRUE(H3->has_value());
+  EXPECT_EQ((*H3)->range, Code.range("syncUsage"));
+  EXPECT_THAT((*H3)->contents.value, testing::HasSubstr("sync(int timeout)"));
+
+  // (d) Hover on #include line
+  auto H4 = Mod.getHover(File, Code.code(), Position{1, 5});
+  ASSERT_TRUE(bool(H4)) << llvm::toString(H4.takeError());
+  ASSERT_TRUE(H4->has_value());
+  EXPECT_THAT((*H4)->contents.value, testing::HasSubstr("#include <vector>"));
+}
+
+TEST(PseudoModuleTest, SemanticHighlightingBasic) {
+  PseudoModule Mod;
+  Annotations Code(R"cpp(
+    class DataService {
+    public:
+      int count;
+      void sync(int timeout);
+    };
+    void DataService::sync(int timeout) {
+      int localVal = timeout + count;
+    }
+  )cpp");
+
+  auto Tokens = Mod.getSemanticHighlightings(Code.code());
+  ASSERT_TRUE(bool(Tokens)) << llvm::toString(Tokens.takeError());
+  ASSERT_FALSE(Tokens->empty());
+
+  bool FoundClass = false;
+  bool FoundMethod = false;
+  bool FoundField = false;
+  bool FoundLocal = false;
+  bool FoundParam = false;
+  bool FoundPrimitive = false;
+
+  for (const auto &Tok : *Tokens) {
+    if (Tok.Kind == HighlightingKind::Class)
+      FoundClass = true;
+    if (Tok.Kind == HighlightingKind::Method)
+      FoundMethod = true;
+    if (Tok.Kind == HighlightingKind::Field)
+      FoundField = true;
+    if (Tok.Kind == HighlightingKind::LocalVariable)
+      FoundLocal = true;
+    if (Tok.Kind == HighlightingKind::Parameter)
+      FoundParam = true;
+    if (Tok.Kind == HighlightingKind::Primitive)
+      FoundPrimitive = true;
+  }
+
+  EXPECT_TRUE(FoundClass);
+  EXPECT_TRUE(FoundMethod);
+  EXPECT_TRUE(FoundField);
+  EXPECT_TRUE(FoundLocal);
+  EXPECT_TRUE(FoundParam);
+  EXPECT_TRUE(FoundPrimitive);
+
+  // Conversion to SemanticTokens protocol format
+  auto SemTokens = Mod.getSemanticTokens(Code.code());
+  ASSERT_TRUE(bool(SemTokens)) << llvm::toString(SemTokens.takeError());
+  EXPECT_FALSE(SemTokens->tokens.empty());
+
+  // Test delta diffing
+  auto Edits = diffTokens(SemTokens->tokens, SemTokens->tokens);
+  EXPECT_TRUE(Edits.empty());
+}
+
+TEST(PseudoModuleTest, CodeCompletionDirectivesAndMembers) {
+  PseudoModule Mod;
+  std::string File = testPath("completion_test.cpp");
+  Annotations Code(R"cpp(
+    class DataService {
+    public:
+      int cacheSize;
+      void sync();
+      void start();
+    };
+
+    void run() {
+      DataService svc;
+      svc.^
+    }
+  )cpp");
+
+  // Member completion on svc.
+  auto Comps = Mod.getCompletions(File, Code.code(), Code.point());
+  ASSERT_TRUE(bool(Comps)) << llvm::toString(Comps.takeError());
+  ASSERT_FALSE(Comps->items.empty());
+
+  bool FoundSync = false;
+  bool FoundStart = false;
+  bool FoundCacheSize = false;
+  for (const auto &Item : Comps->items) {
+    if (Item.label == "sync") {
+      FoundSync = true;
+      EXPECT_EQ(Item.kind, CompletionItemKind::Method);
+    }
+    if (Item.label == "start") {
+      FoundStart = true;
+      EXPECT_EQ(Item.kind, CompletionItemKind::Method);
+    }
+    if (Item.label == "cacheSize") {
+      FoundCacheSize = true;
+      EXPECT_EQ(Item.kind, CompletionItemKind::Field);
+    }
+  }
+  EXPECT_TRUE(FoundSync);
+  EXPECT_TRUE(FoundStart);
+  EXPECT_TRUE(FoundCacheSize);
+
+  // Preprocessor directive completion
+  Annotations DirectiveCode(R"cpp(
+    #inc^
+  )cpp");
+  auto DirComps = Mod.getCompletions(File, DirectiveCode.code(), DirectiveCode.point());
+  ASSERT_TRUE(bool(DirComps)) << llvm::toString(DirComps.takeError());
+  bool FoundInclude = false;
+  for (const auto &Item : DirComps->items) {
+    if (Item.label == "include")
+      FoundInclude = true;
+  }
+  EXPECT_TRUE(FoundInclude);
+}
+
+TEST(PseudoModuleTest, CodeCompletionScopeAndKeywords) {
+  PseudoModule Mod;
+  std::string File = testPath("completion_scope_test.cpp");
+
+  // Scope resolution DataService::
+  Annotations ScopeCode(R"cpp(
+    class DataService {
+    public:
+      static void reset();
+      void sync();
+    };
+    void test() {
+      DataService::^
+    }
+  )cpp");
+  auto ScopeComps = Mod.getCompletions(File, ScopeCode.code(), ScopeCode.point());
+  ASSERT_TRUE(bool(ScopeComps)) << llvm::toString(ScopeComps.takeError());
+  bool FoundReset = false;
+  for (const auto &Item : ScopeComps->items) {
+    if (Item.label == "reset")
+      FoundReset = true;
+  }
+  EXPECT_TRUE(FoundReset);
+
+  // Keyword / local completion
+  Annotations KeywordCode(R"cpp(
+    void test() {
+      int localCount = 10;
+      ret^
+    }
+  )cpp");
+  auto KwComps = Mod.getCompletions(File, KeywordCode.code(), KeywordCode.point());
+  ASSERT_TRUE(bool(KwComps)) << llvm::toString(KwComps.takeError());
+  bool FoundReturn = false;
+  for (const auto &Item : KwComps->items) {
+    if (Item.label == "return")
+      FoundReturn = true;
+  }
+  EXPECT_TRUE(FoundReturn);
+}
+
+TEST(PseudoModuleTest, FeatureModuleCompletionsAcrossFileAndHeaders) {
+  MockFS FS;
+  auto CDB = std::make_unique<MockCompilationDatabase>();
+
+  std::string HeaderFile = testPath("FeatureModule.h");
+  std::string SourceFile = testPath("FeatureModule.cpp");
+
+  FS.Files[HeaderFile] = R"cpp(
+    namespace clang {
+    namespace clangd {
+
+    class FeatureModule {
+    public:
+      virtual ~FeatureModule();
+      virtual void *typeId() const;
+      virtual void initializeLSP();
+
+      struct Facilities {
+        int Scheduler;
+        int Index;
+        int FS;
+        int Server;
+        int CDB;
+      };
+      void initialize(const Facilities &F);
+      virtual void stop();
+      virtual bool blockUntilIdle();
+      Facilities &facilities();
+
+    private:
+      Facilities Fac;
+    };
+
+    class FeatureModuleSet {
+      int Modules;
+      int Map;
+    public:
+      static FeatureModuleSet fromRegistry();
+      void add(FeatureModule *M);
+      bool addImpl(void *Key, FeatureModule *M, const char *Source);
+    };
+
+    using FeatureModuleRegistry = int;
+
+    } // namespace clangd
+    } // namespace clang
+  )cpp";
+
+  PseudoModule Mod;
+  Mod.setFSForTesting(&FS);
+  Mod.setCompilationDatabaseForTesting(CDB.get());
+
+  auto hasItem = [](const CompletionList &List, llvm::StringRef Label) {
+    for (const auto &Item : List.items) {
+      if (Item.label == Label)
+        return true;
+    }
+    return false;
+  };
+
+  // Test 1: Inside initialize - general completion on empty line
+  Annotations InitEmptyCode(R"cpp(
+    #include "FeatureModule.h"
+
+    namespace clang {
+    namespace clangd {
+
+    void FeatureModule::initialize(const Facilities &F) {
+      assert(!Fac && "Initialized twice");
+      ^
+      Fac.emplace(F);
+    }
+
+    }
+    }
+  )cpp");
+  auto InitComps = Mod.getCompletions(SourceFile, InitEmptyCode.code(), InitEmptyCode.point());
+  ASSERT_TRUE(bool(InitComps)) << llvm::toString(InitComps.takeError());
+  EXPECT_FALSE(InitComps->items.empty());
+
+  // Should have parameter F
+  EXPECT_TRUE(hasItem(*InitComps, "F"));
+  // Should have class member Fac
+  EXPECT_TRUE(hasItem(*InitComps, "Fac"));
+  // Should have class member facilities
+  EXPECT_TRUE(hasItem(*InitComps, "facilities"));
+  // Should have header type Facilities
+  EXPECT_TRUE(hasItem(*InitComps, "Facilities"));
+  // Should have header class FeatureModule
+  EXPECT_TRUE(hasItem(*InitComps, "FeatureModule"));
+  // Should have header class FeatureModuleSet
+  EXPECT_TRUE(hasItem(*InitComps, "FeatureModuleSet"));
+  // Should have document token assert
+  EXPECT_TRUE(hasItem(*InitComps, "assert"));
+
+  // Test 2: Member access F. inside initialize
+  Annotations FMemberCode(R"cpp(
+    #include "FeatureModule.h"
+
+    namespace clang {
+    namespace clangd {
+
+    void FeatureModule::initialize(const Facilities &F) {
+      F.^
+    }
+
+    }
+    }
+  )cpp");
+  auto FComps = Mod.getCompletions(SourceFile, FMemberCode.code(), FMemberCode.point());
+  ASSERT_TRUE(bool(FComps)) << llvm::toString(FComps.takeError());
+  EXPECT_TRUE(hasItem(*FComps, "Scheduler"));
+  EXPECT_TRUE(hasItem(*FComps, "Index"));
+  EXPECT_TRUE(hasItem(*FComps, "Server"));
+
+  // Test 3: Member access M-> inside add
+  Annotations MMemberCode(R"cpp(
+    #include "FeatureModule.h"
+
+    namespace clang {
+    namespace clangd {
+
+    void FeatureModuleSet::add(FeatureModule *M) {
+      M->^
+    }
+
+    }
+    }
+  )cpp");
+  auto MComps = Mod.getCompletions(SourceFile, MMemberCode.code(), MMemberCode.point());
+  ASSERT_TRUE(bool(MComps)) << llvm::toString(MComps.takeError());
+  EXPECT_TRUE(hasItem(*MComps, "typeId"));
+  EXPECT_TRUE(hasItem(*MComps, "initialize"));
+  EXPECT_TRUE(hasItem(*MComps, "stop"));
+
+  // Test 4: Scope resolution FeatureModule::
+  Annotations ScopeCode(R"cpp(
+    #include "FeatureModule.h"
+
+    namespace clang {
+    namespace clangd {
+
+    void test() {
+      FeatureModule::^
+    }
+
+    }
+    }
+  )cpp");
+  auto ScopeComps = Mod.getCompletions(SourceFile, ScopeCode.code(), ScopeCode.point());
+  ASSERT_TRUE(bool(ScopeComps)) << llvm::toString(ScopeComps.takeError());
+  EXPECT_TRUE(hasItem(*ScopeComps, "Facilities"));
+  EXPECT_TRUE(hasItem(*ScopeComps, "initialize"));
+  EXPECT_TRUE(hasItem(*ScopeComps, "stop"));
+
+  // Test 5: Scope resolution FeatureModuleSet::
+  Annotations SetScopeCode(R"cpp(
+    #include "FeatureModule.h"
+
+    namespace clang {
+    namespace clangd {
+
+    void test() {
+      FeatureModuleSet::^
+    }
+
+    }
+    }
+  )cpp");
+  auto SetScopeComps = Mod.getCompletions(SourceFile, SetScopeCode.code(), SetScopeCode.point());
+  ASSERT_TRUE(bool(SetScopeComps)) << llvm::toString(SetScopeComps.takeError());
+  EXPECT_TRUE(hasItem(*SetScopeComps, "fromRegistry"));
+  EXPECT_TRUE(hasItem(*SetScopeComps, "add"));
+
+  // Test 6: Chained member access E.getName(). inside fromRegistry
+  Annotations ChainedCode(R"cpp(
+    #include "FeatureModule.h"
+
+    namespace clang {
+    namespace clangd {
+
+    FeatureModuleSet FeatureModuleSet::fromRegistry() {
+      FeatureModuleSet ModuleSet;
+      for (FeatureModuleRegistry::entry E : FeatureModuleRegistry::entries()) {
+        auto M = E.instantiate();
+        if (void *Key = M->typeId())
+          ModuleSet.addImpl(Key, std::move(M), E.getName().^);
+        else
+          ModuleSet.add(std::move(M));
+      }
+      return ModuleSet;
+    }
+
+    }
+    }
+  )cpp");
+  auto ChainedComps = Mod.getCompletions(SourceFile, ChainedCode.code(), ChainedCode.point());
+  ASSERT_TRUE(bool(ChainedComps)) << llvm::toString(ChainedComps.takeError());
+  EXPECT_TRUE(hasItem(*ChainedComps, "data"));
+  EXPECT_TRUE(hasItem(*ChainedComps, "size"));
+  EXPECT_TRUE(hasItem(*ChainedComps, "empty"));
+
+  // Test 7: Chained member access with prefix E.getName().d
+  Annotations ChainedPrefixCode(R"cpp(
+    #include "FeatureModule.h"
+
+    namespace clang {
+    namespace clangd {
+
+    FeatureModuleSet FeatureModuleSet::fromRegistry() {
+      FeatureModuleSet ModuleSet;
+      for (FeatureModuleRegistry::entry E : FeatureModuleRegistry::entries()) {
+        auto M = E.instantiate();
+        if (void *Key = M->typeId())
+          ModuleSet.addImpl(Key, std::move(M), E.getName().d^);
+        else
+          ModuleSet.add(std::move(M));
+      }
+      return ModuleSet;
+    }
+
+    }
+    }
+  )cpp");
+  auto ChainedPrefixComps = Mod.getCompletions(SourceFile, ChainedPrefixCode.code(), ChainedPrefixCode.point());
+  ASSERT_TRUE(bool(ChainedPrefixComps)) << llvm::toString(ChainedPrefixComps.takeError());
+  EXPECT_TRUE(hasItem(*ChainedPrefixComps, "data"));
+}
+
+TEST(PseudoModuleTest, ClangdServerPseudoOnlyHoverSemanticTokensCompletion) {
+  MockFS FS;
+  auto CDB = std::make_unique<MockCompilationDatabase>();
+
+  FeatureModuleSet Modules;
+  auto Pseudo = std::make_unique<PseudoModule>();
+  auto *PseudoPtr = Pseudo.get();
+  PseudoPtr->setPseudoOnly(true);
+  Modules.add(std::move(Pseudo));
+
+  ClangdServer::Options Opts = ClangdServer::optsForTest();
+  Opts.FeatureModules = &Modules;
+  ClangdServer Server(*CDB, FS, Opts);
+
+  Annotations Source(R"cpp(
+    class Worker {
+    public:
+      void $workDecl[[doWork]]();
+    };
+    void run() {
+      Worker w;
+      w.$workCall[[doWork]]();
+      w.^
+    }
+  )cpp");
+
+  std::string FilePath = testPath("pseudo_lsp.cpp");
+  FS.Files[FilePath] = Source.code().str();
+  Server.addDocument(FilePath, Source.code());
+  ASSERT_TRUE(Server.blockUntilIdleForTest());
+
+  // (a) Hover via onHover
+  TextDocumentPositionParams HoverParams;
+  HoverParams.textDocument.uri = URIForFile::canonicalize(FilePath, FilePath);
+  HoverParams.position = Source.range("workCall").start;
+  std::optional<llvm::Expected<std::optional<Hover>>> HoverResult;
+  PseudoPtr->onHover(HoverParams, [&](llvm::Expected<std::optional<Hover>> H) {
+    HoverResult = std::move(H);
+  });
+  ASSERT_TRUE(Server.blockUntilIdleForTest());
+  ASSERT_TRUE(HoverResult.has_value());
+  ASSERT_TRUE(bool(*HoverResult)) << llvm::toString(HoverResult->takeError());
+  ASSERT_TRUE((*HoverResult)->has_value());
+  EXPECT_THAT((**HoverResult)->contents.value, testing::HasSubstr("doWork"));
+
+  // (b) Semantic tokens full via onSemanticTokens
+  SemanticTokensParams STParams;
+  STParams.textDocument.uri = URIForFile::canonicalize(FilePath, FilePath);
+  std::optional<llvm::Expected<SemanticTokens>> STResult;
+  PseudoPtr->onSemanticTokens(STParams, [&](llvm::Expected<SemanticTokens> ST) {
+    STResult = std::move(ST);
+  });
+  ASSERT_TRUE(Server.blockUntilIdleForTest());
+  ASSERT_TRUE(STResult.has_value());
+  ASSERT_TRUE(bool(*STResult)) << llvm::toString(STResult->takeError());
+  EXPECT_FALSE((*STResult)->tokens.empty());
+  std::string FirstResultId = (*STResult)->resultId;
+  EXPECT_FALSE(FirstResultId.empty());
+
+  // (c) Semantic tokens delta via onSemanticTokensDelta
+  SemanticTokensDeltaParams DeltaParams;
+  DeltaParams.textDocument.uri = STParams.textDocument.uri;
+  DeltaParams.previousResultId = FirstResultId;
+  std::optional<llvm::Expected<SemanticTokensOrDelta>> DeltaResult;
+  PseudoPtr->onSemanticTokensDelta(DeltaParams, [&](llvm::Expected<SemanticTokensOrDelta> D) {
+    DeltaResult = std::move(D);
+  });
+  ASSERT_TRUE(Server.blockUntilIdleForTest());
+  ASSERT_TRUE(DeltaResult.has_value());
+  ASSERT_TRUE(bool(*DeltaResult)) << llvm::toString(DeltaResult->takeError());
+  EXPECT_NE((*DeltaResult)->resultId, FirstResultId);
+  ASSERT_TRUE((*DeltaResult)->edits.has_value());
+  EXPECT_TRUE((*DeltaResult)->edits->empty());
+
+  // (d) Completion via onCompletion
+  CompletionParams CompParams;
+  CompParams.textDocument.uri = HoverParams.textDocument.uri;
+  CompParams.position = Source.point();
+  std::optional<llvm::Expected<CompletionList>> CompResult;
+  PseudoPtr->onCompletion(CompParams, [&](llvm::Expected<CompletionList> CL) {
+    CompResult = std::move(CL);
+  });
+  ASSERT_TRUE(Server.blockUntilIdleForTest());
+  ASSERT_TRUE(CompResult.has_value());
+  ASSERT_TRUE(bool(*CompResult)) << llvm::toString(CompResult->takeError());
+  bool FoundDoWork = false;
+  for (const auto &Item : (*CompResult)->items) {
+    if (Item.label == "doWork")
+      FoundDoWork = true;
+  }
+  EXPECT_TRUE(FoundDoWork);
+}
+
+TEST(PseudoModuleTest, ClangdServerFallbackHoverSemanticTokensCompletion) {
+  MockFS FS;
+  auto CDB = std::make_unique<MockCompilationDatabase>();
+  // Invalid compile command that causes Clang AST build to fail
+  CDB->ExtraClangFlags = {"-###"};
+
+  FeatureModuleSet Modules;
+  auto Pseudo = std::make_unique<PseudoModule>();
+  auto *PseudoPtr = Pseudo.get();
+  Modules.add(std::move(Pseudo));
+
+  ClangdServer::Options Opts = ClangdServer::optsForTest();
+  Opts.FeatureModules = &Modules;
+  ClangdServer Server(*CDB, FS, Opts);
+
+  Annotations Source(R"cpp(
+    class BackupService {
+    public:
+      void $decl[[performBackup]]();
+    };
+    void test() {
+      BackupService svc;
+      svc.$call[[performBackup]]();
+      svc.^
+    }
+  )cpp");
+
+  std::string FilePath = testPath("broken_ast.cpp");
+  FS.Files[FilePath] = Source.code().str();
+  Server.addDocument(FilePath, Source.code());
+  ASSERT_TRUE(Server.blockUntilIdleForTest());
+
+  // Clang AST fails to build
+  EXPECT_EQ(dumpAST(Server, FilePath), "<no-ast>");
+
+  // Fallback for hover
+  TextDocumentPositionParams HoverParams;
+  HoverParams.textDocument.uri = URIForFile::canonicalize(FilePath, FilePath);
+  HoverParams.position = Source.range("call").start;
+  std::optional<llvm::Expected<std::optional<Hover>>> HoverResult;
+  PseudoPtr->onHover(HoverParams, [&](llvm::Expected<std::optional<Hover>> H) {
+    HoverResult = std::move(H);
+  });
+  ASSERT_TRUE(Server.blockUntilIdleForTest());
+  ASSERT_TRUE(HoverResult.has_value());
+  ASSERT_TRUE(bool(*HoverResult)) << llvm::toString(HoverResult->takeError());
+  ASSERT_TRUE((*HoverResult)->has_value());
+  EXPECT_THAT((**HoverResult)->contents.value, testing::HasSubstr("performBackup"));
+
+  // Fallback for semantic tokens
+  SemanticTokensParams STParams;
+  STParams.textDocument.uri = URIForFile::canonicalize(FilePath, FilePath);
+  std::optional<llvm::Expected<SemanticTokens>> STResult;
+  PseudoPtr->onSemanticTokens(STParams, [&](llvm::Expected<SemanticTokens> ST) {
+    STResult = std::move(ST);
+  });
+  ASSERT_TRUE(Server.blockUntilIdleForTest());
+  ASSERT_TRUE(STResult.has_value());
+  ASSERT_TRUE(bool(*STResult)) << llvm::toString(STResult->takeError());
+  EXPECT_FALSE((*STResult)->tokens.empty());
+
+  // Fallback for completions
+  CompletionParams CompParams;
+  CompParams.textDocument.uri = HoverParams.textDocument.uri;
+  CompParams.position = Source.point();
+  std::optional<llvm::Expected<CompletionList>> CompResult;
+  PseudoPtr->onCompletion(CompParams, [&](llvm::Expected<CompletionList> CL) {
+    CompResult = std::move(CL);
+  });
+  ASSERT_TRUE(Server.blockUntilIdleForTest());
+  ASSERT_TRUE(CompResult.has_value());
+  ASSERT_TRUE(bool(*CompResult)) << llvm::toString(CompResult->takeError());
+  bool FoundPerformBackup = false;
+  for (const auto &Item : (*CompResult)->items) {
+    if (Item.label == "performBackup")
+      FoundPerformBackup = true;
+  }
+  EXPECT_TRUE(FoundPerformBackup);
+}
+
+TEST(PseudoModuleTest, StdMoveHoverCompletionAndGTD) {
+  MockFS FS;
+  auto CDB = std::make_unique<MockCompilationDatabase>();
+
+  std::string UtilityHeader = testPath("utility");
+  std::string FeatureHeader = testPath("FeatureModule.h");
+  std::string SourceFile = testPath("FeatureModule.cpp");
+
+  FS.Files[UtilityHeader] = R"cpp(
+    namespace std {
+      template <typename T>
+      constexpr T&& move(T& t) noexcept;
+    }
+  )cpp";
+
+  FS.Files[FeatureHeader] = R"cpp(
+    #include "utility"
+    namespace clang {
+    namespace clangd {
+      class FeatureModule {};
+      class FeatureModuleSet {
+        int Modules;
+      public:
+        void add(FeatureModule *M);
+      };
+    }
+    }
+  )cpp";
+
+  PseudoModule Mod;
+  Mod.setFSForTesting(&FS);
+  Mod.setCompilationDatabaseForTesting(CDB.get());
+
+  // 1. Hover on std::move: cursor on 'move'
+  Annotations HoverMoveCode(R"cpp(
+    #include "FeatureModule.h"
+    namespace clang {
+    namespace clangd {
+    void FeatureModuleSet::add(FeatureModule *M) {
+      Modules.push_back(std::$move^move(M));
+    }
+    }
+    }
+  )cpp");
+  auto HMove = Mod.getHover(SourceFile, HoverMoveCode.code(), HoverMoveCode.point("move"));
+  ASSERT_TRUE(bool(HMove)) << llvm::toString(HMove.takeError());
+  ASSERT_TRUE(HMove->has_value());
+  EXPECT_TRUE((*HMove)->contents.value.find("move") != std::string::npos);
+  EXPECT_TRUE((*HMove)->contents.value.find("remove_reference_t") != std::string::npos);
+
+  // 2. Hover on std::move: cursor on 'std'
+  Annotations HoverStdCode(R"cpp(
+    #include "FeatureModule.h"
+    namespace clang {
+    namespace clangd {
+    void FeatureModuleSet::add(FeatureModule *M) {
+      Modules.push_back($std^std::move(M));
+    }
+    }
+    }
+  )cpp");
+  auto HStd = Mod.getHover(SourceFile, HoverStdCode.code(), HoverStdCode.point("std"));
+  ASSERT_TRUE(bool(HStd)) << llvm::toString(HStd.takeError());
+  ASSERT_TRUE(HStd->has_value());
+  EXPECT_TRUE((*HStd)->contents.value.find("namespace std") != std::string::npos);
+
+  // 3. Completion on std:: inside call
+  Annotations CompStdCode(R"cpp(
+    #include "FeatureModule.h"
+    namespace clang {
+    namespace clangd {
+    void FeatureModuleSet::add(FeatureModule *M) {
+      Modules.push_back(std::^);
+    }
+    }
+    }
+  )cpp");
+  auto CStd = Mod.getCompletions(SourceFile, CompStdCode.code(), CompStdCode.point());
+  ASSERT_TRUE(bool(CStd)) << llvm::toString(CStd.takeError());
+  bool FoundMove = false;
+  bool FoundForward = false;
+  bool FoundUniquePtr = false;
+  for (const auto &Item : CStd->items) {
+    if (Item.label == "move") {
+      FoundMove = true;
+      EXPECT_EQ(Item.kind, CompletionItemKind::Function);
+      EXPECT_TRUE(Item.detail.find("move") != std::string::npos);
+    }
+    if (Item.label == "forward")
+      FoundForward = true;
+    if (Item.label == "unique_ptr")
+      FoundUniquePtr = true;
+  }
+  EXPECT_TRUE(FoundMove);
+  EXPECT_TRUE(FoundForward);
+  EXPECT_TRUE(FoundUniquePtr);
+
+  // 4. Completion on std::mo
+  Annotations CompStdMoCode(R"cpp(
+    #include "FeatureModule.h"
+    namespace clang {
+    namespace clangd {
+    void FeatureModuleSet::add(FeatureModule *M) {
+      Modules.push_back(std::mo^);
+    }
+    }
+    }
+  )cpp");
+  auto CStdMo = Mod.getCompletions(SourceFile, CompStdMoCode.code(), CompStdMoCode.point());
+  ASSERT_TRUE(bool(CStdMo)) << llvm::toString(CStdMo.takeError());
+  FoundMove = false;
+  for (const auto &Item : CStdMo->items) {
+    if (Item.label == "move")
+      FoundMove = true;
+  }
+  EXPECT_TRUE(FoundMove);
+
+  // 5. GTD on move jumps to utility header
+  Annotations GTDCode(R"cpp(
+    #include "FeatureModule.h"
+    namespace clang {
+    namespace clangd {
+    void FeatureModuleSet::add(FeatureModule *M) {
+      Modules.push_back(std::$move^move(M));
+    }
+    }
+    }
+  )cpp");
+  auto Locs = Mod.locateSymbolAt(SourceFile, GTDCode.code(), GTDCode.point("move"));
+  ASSERT_TRUE(bool(Locs)) << llvm::toString(Locs.takeError());
+  ASSERT_FALSE(Locs->empty());
+  EXPECT_EQ(Locs->front().Name, "move");
+
+  // 6. Semantic Highlighting
+  auto Highs = Mod.getSemanticHighlightings(GTDCode.code());
+  ASSERT_TRUE(bool(Highs)) << llvm::toString(Highs.takeError());
+  bool HighlightedStd = false;
+  bool HighlightedMove = false;
+  for (const auto &Tok : *Highs) {
+    if (Tok.Kind == HighlightingKind::Namespace)
+      HighlightedStd = true;
+    if (Tok.Kind == HighlightingKind::Function)
+      HighlightedMove = true;
+  }
+  EXPECT_TRUE(HighlightedStd);
+  EXPECT_TRUE(HighlightedMove);
+}
+
+TEST(PseudoModuleTest, FeatureModuleRegistryEntriesAndRegistryEntryMethodsGTD) {
+  MockFS FS;
+  auto CDB = std::make_unique<MockCompilationDatabase>();
+
+  std::string RegistryHeader = testPath("Registry.h");
+  std::string UtilityHeader = testPath("utility");
+  std::string FeatureHeader = testPath("FeatureModule.h");
+  std::string SourceFile = testPath("FeatureModule.cpp");
+
+  FS.Files[RegistryHeader] = R"cpp(
+    namespace llvm {
+    template <typename T>
+    class SimpleRegistryEntry {
+    public:
+      void getName();
+      void getDesc();
+      void instantiate();
+    };
+
+    template <typename T>
+    class Registry {
+    public:
+      using entry = SimpleRegistryEntry<T>;
+      static void entries();
+    };
+    }
+  )cpp";
+
+  FS.Files[UtilityHeader] = R"cpp(
+    namespace std {
+      template <typename T>
+      constexpr T&& move(T& t) noexcept;
+    }
+  )cpp";
+
+  FS.Files[FeatureHeader] = R"cpp(
+    #include "Registry.h"
+    namespace clang {
+    namespace clangd {
+      class FeatureModule {};
+      class FeatureModuleSet {
+      public:
+        static FeatureModuleSet fromRegistry();
+      };
+      using FeatureModuleRegistry = llvm::Registry<FeatureModule>;
+    }
+    }
+  )cpp";
+
+  PseudoModule Mod;
+  Mod.setFSForTesting(&FS);
+  Mod.setCompilationDatabaseForTesting(CDB.get());
+
+  Annotations Code(R"cpp(
+    #include "FeatureModule.h"
+    namespace clang {
+    namespace clangd {
+    FeatureModuleSet FeatureModuleSet::fromRegistry() {
+      FeatureModuleSet ModuleSet;
+      for (FeatureModuleRegistry::entry E : FeatureModuleRegistry::$entries^entries()) {
+        E.$getName^getName();
+        E.$getDesc^getDesc();
+        auto M = E.$instantiate^instantiate();
+        std::$move^move(M);
+      }
+      return ModuleSet;
+    }
+    }
+    }
+  )cpp");
+
+  // 1. GTD on FeatureModuleRegistry::entries()
+  auto LocEntries = Mod.locateSymbolAt(SourceFile, Code.code(), Code.point("entries"));
+  ASSERT_TRUE(bool(LocEntries)) << llvm::toString(LocEntries.takeError());
+  ASSERT_FALSE(LocEntries->empty());
+  EXPECT_EQ(LocEntries->front().Name, "entries");
+  EXPECT_TRUE(llvm::StringRef(LocEntries->front().PreferredDeclaration.uri.file())
+                  .ends_with("Registry.h"));
+
+  // 2. GTD on E.getName()
+  auto LocGetName = Mod.locateSymbolAt(SourceFile, Code.code(), Code.point("getName"));
+  ASSERT_TRUE(bool(LocGetName)) << llvm::toString(LocGetName.takeError());
+  ASSERT_FALSE(LocGetName->empty());
+  EXPECT_EQ(LocGetName->front().Name, "getName");
+  EXPECT_TRUE(llvm::StringRef(LocGetName->front().PreferredDeclaration.uri.file())
+                  .ends_with("Registry.h"));
+
+  // 3. GTD on E.getDesc()
+  auto LocGetDesc = Mod.locateSymbolAt(SourceFile, Code.code(), Code.point("getDesc"));
+  ASSERT_TRUE(bool(LocGetDesc)) << llvm::toString(LocGetDesc.takeError());
+  ASSERT_FALSE(LocGetDesc->empty());
+  EXPECT_EQ(LocGetDesc->front().Name, "getDesc");
+  EXPECT_TRUE(llvm::StringRef(LocGetDesc->front().PreferredDeclaration.uri.file())
+                  .ends_with("Registry.h"));
+
+  // 4. GTD on E.instantiate()
+  auto LocInst = Mod.locateSymbolAt(SourceFile, Code.code(), Code.point("instantiate"));
+  ASSERT_TRUE(bool(LocInst)) << llvm::toString(LocInst.takeError());
+  ASSERT_FALSE(LocInst->empty());
+  EXPECT_EQ(LocInst->front().Name, "instantiate");
+  EXPECT_TRUE(llvm::StringRef(LocInst->front().PreferredDeclaration.uri.file())
+                  .ends_with("Registry.h"));
+
+  // 5. GTD on std::move()
+  auto LocMove = Mod.locateSymbolAt(SourceFile, Code.code(), Code.point("move"));
+  ASSERT_TRUE(bool(LocMove)) << llvm::toString(LocMove.takeError());
+  ASSERT_FALSE(LocMove->empty());
+  EXPECT_EQ(LocMove->front().Name, "move");
+  EXPECT_TRUE(llvm::StringRef(LocMove->front().PreferredDeclaration.uri.file())
+                  .ends_with("utility"));
+
+  // 6. Hover on E.getName()
+  auto HGetName = Mod.getHover(SourceFile, Code.code(), Code.point("getName"));
+  ASSERT_TRUE(bool(HGetName)) << llvm::toString(HGetName.takeError());
+  ASSERT_TRUE(HGetName->has_value());
+  EXPECT_TRUE((*HGetName)->contents.value.find("getName") != std::string::npos);
+
+  // 7. Hover on FeatureModuleRegistry::entries()
+  auto HEntries = Mod.getHover(SourceFile, Code.code(), Code.point("entries"));
+  ASSERT_TRUE(bool(HEntries)) << llvm::toString(HEntries.takeError());
+  ASSERT_TRUE(HEntries->has_value());
+  EXPECT_TRUE((*HEntries)->contents.value.find("entries") != std::string::npos);
+
+  // 8. Hover on std::move()
+  auto HMove = Mod.getHover(SourceFile, Code.code(), Code.point("move"));
+  ASSERT_TRUE(bool(HMove)) << llvm::toString(HMove.takeError());
+  ASSERT_TRUE(HMove->has_value());
+  EXPECT_TRUE((*HMove)->contents.value.find("move") != std::string::npos);
+}
+
 } // namespace
 } // namespace clangd
 } // namespace clang
