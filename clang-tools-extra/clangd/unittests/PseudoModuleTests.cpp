@@ -3669,6 +3669,90 @@ TEST(PseudoModuleTest, ClangdServerValidateAllNodeTypes) {
   EXPECT_EQ((*SubLoc)->detail, "Loc");
 }
 
+// Verifies that Go-To-Definition on `initialize` in `Mod.initialize(F)`
+// correctly resolves through the range-for auto variable `Mod` (deduced from
+// `*Opts.FeatureModules` of type `FeatureModuleSet *`) to reach
+// `FeatureModule::initialize(const Facilities &F)` in the included header.
+TEST(PseudoModuleTest, RangeForAutoTypeResolutionGTD) {
+  MockFS FS;
+  auto CDB = std::make_unique<MockCompilationDatabase>();
+
+  std::string HeaderFile = testPath("FeatureModule.h");
+  std::string SourceFile = testPath("ClangdServer.cpp");
+
+  FS.Files[HeaderFile] = R"cpp(
+    namespace clang {
+    namespace clangd {
+
+    class FeatureModule {
+    public:
+      struct Facilities {
+        int Scheduler;
+      };
+      void initialize(const Facilities &F);
+      virtual ~FeatureModule();
+    };
+
+    class FeatureModuleSet {
+    public:
+      FeatureModule *begin();
+      FeatureModule *end();
+    };
+
+    } // namespace clangd
+    } // namespace clang
+  )cpp";
+
+  PseudoModule Mod;
+  Mod.setFSForTesting(&FS);
+  Mod.setCompilationDatabaseForTesting(CDB.get());
+
+  // Simulate the ClangdServer.cpp pattern:
+  //   for (auto &Mod : *Opts.FeatureModules)
+  //     Mod.initialize(F);
+  // GTD on `initialize` should resolve to FeatureModule::initialize in header.
+  Annotations Code(R"cpp(
+    #include "FeatureModule.h"
+
+    namespace clang {
+    namespace clangd {
+
+    struct Options {
+      FeatureModuleSet *FeatureModules = nullptr;
+    };
+
+    void foo(Options &Opts) {
+      FeatureModule::Facilities F{};
+      for (auto &$var[[Mod]] : *Opts.FeatureModules)
+        Mod.$call^initialize(F);
+    }
+
+    } // namespace clangd
+    } // namespace clang
+  )cpp");
+
+  // GTD on `initialize` call
+  auto Loc = Mod.locateSymbolAt(SourceFile, Code.code(), Code.point("call"));
+  ASSERT_TRUE(bool(Loc)) << llvm::toString(Loc.takeError());
+  EXPECT_EQ(Loc->size(), 1u) << "Expected 1 location, got " << Loc->size();
+  if (!Loc->empty()) {
+    EXPECT_EQ((*Loc)[0].Name, "initialize")
+        << "Expected 'initialize', got: " << (*Loc)[0].Name;
+    // Should resolve to the definition in FeatureModule.h
+    EXPECT_TRUE((*Loc)[0].PreferredDeclaration.uri.file().ends_with("FeatureModule.h"))
+        << "Expected FeatureModule.h, got: "
+        << (*Loc)[0].PreferredDeclaration.uri.file();
+  }
+
+  // GTD on the range-for variable `Mod` itself should jump back to its declaration
+  auto LocVar = Mod.locateSymbolAt(SourceFile, Code.code(),
+                                   Code.range("var").start);
+  ASSERT_TRUE(bool(LocVar)) << llvm::toString(LocVar.takeError());
+  if (!LocVar->empty()) {
+    EXPECT_EQ((*LocVar)[0].Name, "Mod");
+  }
+}
+
 } // namespace
 } // namespace clangd
 } // namespace clang
