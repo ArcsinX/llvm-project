@@ -104,6 +104,11 @@ public:
   llvm::Expected<CompletionList>
   getCompletions(PathRef File, llvm::StringRef Code, Position Pos);
 
+  /// Parse C++ code using clang-pseudo and compute AST.
+  llvm::Expected<std::optional<ASTNode>>
+  getAST(PathRef File, llvm::StringRef Code,
+         std::optional<Range> R = std::nullopt);
+
   void onGoToDefinition(const TextDocumentPositionParams &Params,
                         Callback<std::vector<Location>> Reply);
   void onGoToDeclaration(const TextDocumentPositionParams &Params,
@@ -126,6 +131,7 @@ public:
                              Callback<SemanticTokensOrDelta> Reply);
   void onCompletion(const CompletionParams &Params,
                     Callback<CompletionList> Reply);
+  void onAST(const ASTParams &Params, Callback<std::optional<ASTNode>> Reply);
 
   struct IncludeDirective {
     std::string Written;
