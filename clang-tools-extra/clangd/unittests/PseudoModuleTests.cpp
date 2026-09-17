@@ -2863,6 +2863,46 @@ TEST(PseudoModuleTest, PosixPathStrGTD) {
   EXPECT_TRUE(!UnknownLoc || UnknownLoc->empty());
 }
 
+TEST(PseudoModuleTest, LambdaScopeAndGTD) {
+  MockFS FS;
+  auto CDB = std::make_unique<MockCompilationDatabase>();
+
+  std::string SourceFile = testPath("test.cpp");
+  PseudoModule Mod;
+  Mod.setFSForTesting(&FS);
+  Mod.setCompilationDatabaseForTesting(CDB.get());
+
+  Annotations Code(R"cpp(
+    void codeComplete(int $cbOuter^CB) {
+      int $optsOuter^CodeCompleteOpts = 42;
+      auto Task = [$optsCap^CodeCompleteOpts, $cbCap^CB = CB](int $paramIP^IP) mutable {
+        int $specVar^SpecFuzzyFind = 1;
+        int $parseInputVar^ParseInput{2};
+        $cbUse^CB;
+        $specUse^SpecFuzzyFind;
+        $parseInputUse^ParseInput;
+        $optsUse^CodeCompleteOpts;
+      };
+    }
+  )cpp");
+
+  auto LocCB = Mod.locateSymbolAt(SourceFile, Code.code(), Code.point("cbUse"));
+  ASSERT_TRUE(LocCB && !LocCB->empty());
+  EXPECT_EQ(LocCB->front().PreferredDeclaration.range.start, Code.point("cbCap"));
+
+  auto LocSpec = Mod.locateSymbolAt(SourceFile, Code.code(), Code.point("specUse"));
+  ASSERT_TRUE(LocSpec && !LocSpec->empty());
+  EXPECT_EQ(LocSpec->front().PreferredDeclaration.range.start, Code.point("specVar"));
+
+  auto LocParseInput = Mod.locateSymbolAt(SourceFile, Code.code(), Code.point("parseInputUse"));
+  ASSERT_TRUE(LocParseInput && !LocParseInput->empty());
+  EXPECT_EQ(LocParseInput->front().PreferredDeclaration.range.start, Code.point("parseInputVar"));
+
+  auto LocOpts = Mod.locateSymbolAt(SourceFile, Code.code(), Code.point("optsUse"));
+  ASSERT_TRUE(LocOpts && !LocOpts->empty());
+  EXPECT_EQ(LocOpts->front().PreferredDeclaration.range.start, Code.point("optsCap"));
+}
+
 
 } // namespace
 } // namespace clangd
