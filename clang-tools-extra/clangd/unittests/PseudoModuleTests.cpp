@@ -2903,6 +2903,169 @@ TEST(PseudoModuleTest, LambdaScopeAndGTD) {
   EXPECT_EQ(LocOpts->front().PreferredDeclaration.range.start, Code.point("optsCap"));
 }
 
+TEST(PseudoModuleTest, WantDiagnosticsAutoGTD) {
+  MockFS FS;
+  auto CDB = std::make_unique<MockCompilationDatabase>();
+
+  std::string TUSchedulerH = testPath("TUScheduler.h");
+  std::string SourceFile = testPath("test.cpp");
+
+  Annotations Header(R"cpp(
+    namespace clang {
+    namespace clangd {
+    enum class WantDiagnostics {
+      Yes,
+      No,
+      $autoDef^Auto,
+    };
+    }
+    }
+  )cpp");
+  FS.Files[TUSchedulerH] = Header.code().str();
+
+  PseudoModule Mod;
+  Mod.setFSForTesting(&FS);
+  Mod.setCompilationDatabaseForTesting(CDB.get());
+
+  Annotations Code(R"cpp(
+    #include "TUScheduler.h"
+    namespace clang {
+    namespace clangd {
+    void test() {
+      auto x = WantDiagnostics::$autoUse^Auto;
+    }
+    }
+    }
+  )cpp");
+
+  auto Loc = Mod.locateSymbolAt(SourceFile, Code.code(), Code.point("autoUse"));
+  ASSERT_TRUE(bool(Loc)) << (Loc ? "" : llvm::toString(Loc.takeError()));
+  ASSERT_TRUE(Loc && !Loc->empty());
+  EXPECT_EQ(Loc->front().Name, "Auto");
+  EXPECT_TRUE(llvm::StringRef(Loc->front().PreferredDeclaration.uri.file()).ends_with("TUScheduler.h"));
+  EXPECT_EQ(Loc->front().PreferredDeclaration.range.start, Header.point("autoDef"));
+}
+
+TEST(PseudoModuleTest, ClangdNamespaceSignatureHelpGTD) {
+  MockFS FS;
+  auto CDB = std::make_unique<MockCompilationDatabase>();
+
+  std::string ClangdServerH = testPath("ClangdServer.h");
+  std::string CodeCompleteH = testPath("CodeComplete.h");
+  std::string SourceFile = testPath("ClangdServer.cpp");
+
+  FS.Files[ClangdServerH] = R"cpp(
+    namespace clang {
+    namespace clangd {
+    class ClangdServer {
+    public:
+      void signatureHelp();
+    };
+    }
+    }
+  )cpp";
+
+  Annotations CodeComplete(R"cpp(
+    namespace clang {
+    namespace clangd {
+    void $freeSigHelp^signatureHelp(int A, int B);
+    }
+    }
+  )cpp");
+  FS.Files[CodeCompleteH] = CodeComplete.code().str();
+
+  PseudoModule Mod;
+  Mod.setFSForTesting(&FS);
+  Mod.setCompilationDatabaseForTesting(CDB.get());
+
+  Annotations Code(R"cpp(
+    #include "ClangdServer.h"
+    #include "CodeComplete.h"
+    namespace clang {
+    namespace clangd {
+    void ClangdServer::signatureHelp() {
+      clangd::$sigHelpCall^signatureHelp(1, 2);
+    }
+    }
+    }
+  )cpp");
+
+  auto Loc = Mod.locateSymbolAt(SourceFile, Code.code(), Code.point("sigHelpCall"));
+  ASSERT_TRUE(bool(Loc)) << (Loc ? "" : llvm::toString(Loc.takeError()));
+  ASSERT_TRUE(Loc && !Loc->empty());
+  EXPECT_EQ(Loc->front().Name, "signatureHelp");
+  EXPECT_TRUE(llvm::StringRef(Loc->front().PreferredDeclaration.uri.file()).ends_with("CodeComplete.h"))
+      << "Expected CodeComplete.h, got " << Loc->front().PreferredDeclaration.uri.file();
+  EXPECT_EQ(Loc->front().PreferredDeclaration.range.start, CodeComplete.point("freeSigHelp"));
+}
+
+TEST(PseudoModuleTest, PrepareRenameParameterNewNameReferences) {
+  MockFS FS;
+  auto CDB = std::make_unique<MockCompilationDatabase>();
+
+  std::string SourceFile = testPath("ClangdServer.cpp");
+  PseudoModule Mod;
+  Mod.setFSForTesting(&FS);
+  Mod.setCompilationDatabaseForTesting(CDB.get());
+
+  Annotations Code(R"cpp(
+    namespace clang {
+    namespace clangd {
+    void prepareRename(int $paramNewName^NewName) {
+      auto Action = [$capNewName^NewName = $rhsNewName^NewName]() {
+        int x = $useNewName^NewName;
+      };
+    }
+    }
+    }
+  )cpp");
+
+  auto Refs = Mod.findReferences(SourceFile, Code.code(), Code.point("paramNewName"));
+  ASSERT_TRUE(bool(Refs)) << (Refs ? "" : llvm::toString(Refs.takeError()));
+  EXPECT_FALSE(Refs->References.empty()) << "NewName parameter should have references";
+
+  std::vector<Position> RefPositions;
+  for (const auto &R : Refs->References)
+    RefPositions.push_back(R.Loc.range.start);
+
+  EXPECT_TRUE(llvm::is_contained(RefPositions, Code.point("paramNewName")));
+  EXPECT_TRUE(llvm::is_contained(RefPositions, Code.point("rhsNewName")));
+  EXPECT_TRUE(llvm::is_contained(RefPositions, Code.point("capNewName")));
+  EXPECT_TRUE(llvm::is_contained(RefPositions, Code.point("useNewName")));
+}
+
+TEST(PseudoModuleTest, LambdaInitCaptureSecondFileJumpsToOuter) {
+  MockFS FS;
+  auto CDB = std::make_unique<MockCompilationDatabase>();
+
+  std::string SourceFile = testPath("test.cpp");
+  PseudoModule Mod;
+  Mod.setFSForTesting(&FS);
+  Mod.setCompilationDatabaseForTesting(CDB.get());
+
+  Annotations Code(R"cpp(
+    struct FileObj {
+      void str();
+    };
+    void codeComplete(FileObj $outerFile^File) {
+      auto Task = [$capFile^File = $rhsFile^File.str()]() {
+        $useFile^File;
+      };
+    }
+  )cpp");
+
+  // 1. Second File in File = File.str() MUST jump to outerFile
+  auto LocRhs = Mod.locateSymbolAt(SourceFile, Code.code(), Code.point("rhsFile"));
+  ASSERT_TRUE(bool(LocRhs)) << (LocRhs ? "" : llvm::toString(LocRhs.takeError()));
+  ASSERT_TRUE(LocRhs && !LocRhs->empty());
+  EXPECT_EQ(LocRhs->front().PreferredDeclaration.range.start, Code.point("outerFile"));
+
+  // 2. Use inside body jumps to capFile
+  auto LocUse = Mod.locateSymbolAt(SourceFile, Code.code(), Code.point("useFile"));
+  ASSERT_TRUE(bool(LocUse)) << (LocUse ? "" : llvm::toString(LocUse.takeError()));
+  ASSERT_TRUE(LocUse && !LocUse->empty());
+  EXPECT_EQ(LocUse->front().PreferredDeclaration.range.start, Code.point("capFile"));
+}
 
 } // namespace
 } // namespace clangd
