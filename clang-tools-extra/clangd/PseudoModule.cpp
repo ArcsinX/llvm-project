@@ -3560,6 +3560,52 @@ PseudoModule::locateSymbolAt(PathRef File, llvm::StringRef Code, Position Pos) {
           /*MaxHeaders=*/100, /*MaxDepth=*/4);
     }
 
+    if (!Found && !CleanRec.empty()) {
+      std::vector<std::string> CandHeaders;
+      if (ReceiverType.find("llvm::") != std::string::npos ||
+          CleanRec.find("Small") != std::string::npos ||
+          CleanRec.find("Dense") != std::string::npos ||
+          CleanRec.find("String") != std::string::npos ||
+          CleanRec.find("Array") != std::string::npos) {
+        CandHeaders.push_back("llvm/ADT/" + CleanRec + ".h");
+        CandHeaders.push_back("llvm/Support/" + CleanRec + ".h");
+        if (CleanRec == "SmallString")
+          CandHeaders.push_back("llvm/ADT/SmallVector.h");
+      }
+      if (ReceiverType.find("clang::") != std::string::npos) {
+        CandHeaders.push_back("clang/Basic/" + CleanRec + ".h");
+        CandHeaders.push_back("clang/AST/" + CleanRec + ".h");
+      }
+      CandHeaders.push_back(CleanRec + ".h");
+
+      for (const auto &Cand : CandHeaders) {
+        IncludeDirective Inc;
+        Inc.Written = Cand;
+        Inc.IsAngled = true;
+        std::string Resolved = resolveHeader(Inc, CurrentDir, IncludeDirs, *FS);
+        if (!Resolved.empty()) {
+          if (auto Info = getHeaderInfo(Resolved, *FS)) {
+            for (const auto &D : Info->Decls) {
+              if (D.Name == TargetName) {
+                if (D.EnclosingClass == CleanRec ||
+                    D.EnclosingScope == CleanRec ||
+                    (!ResolvedRec.empty() && D.EnclosingClass == ResolvedRec) ||
+                    (CleanRec == "SmallString" && D.EnclosingClass == "SmallVector") ||
+                    llvm::StringRef(D.EnclosingClass).ends_with_insensitive(CleanRec)) {
+                  BestDecl = D;
+                  BestHeaderPath = Resolved;
+                  Found = true;
+                  break;
+                }
+              }
+            }
+            if (Found)
+              break;
+          }
+        }
+      }
+    }
+
     if (!Found && (CleanRec == "pair" || TargetName == "first" ||
                    TargetName == "second")) {
       std::string PairHeader = findUtilityHeader();
@@ -3596,14 +3642,17 @@ PseudoModule::locateSymbolAt(PathRef File, llvm::StringRef Code, Position Pos) {
     }
 
     if (!Found && !CleanRec.empty()) {
-      // If member wasn't found in parsed decls, search the header that defines CleanRec
+      // If member wasn't found in parsed decls, search the header that DEFINES CleanRec.
+      // D.IsDefinition MUST be true to avoid forward declarations (e.g. class SmallString; in Preprocessor.h).
       traverseIncludedHeaders(
           *this, File, Code, *FS,
           [&](const HeaderInfo &Info, llvm::StringRef HeaderPath) {
             bool DefinesCleanRec = false;
+            Range ClassScopeRange{Position{0, 0}, Position{0, 0}};
             for (const auto &D : Info.Decls) {
-              if (D.Name == CleanRec && PseudoModule::isTypeDecl(D.Kind)) {
+              if (D.Name == CleanRec && PseudoModule::isTypeDecl(D.Kind) && D.IsDefinition) {
                 DefinesCleanRec = true;
+                ClassScopeRange = D.ScopeRange;
                 break;
               }
             }
@@ -3611,11 +3660,19 @@ PseudoModule::locateSymbolAt(PathRef File, llvm::StringRef Code, Position Pos) {
               Range TargetRange = findSymbolRangeInFile(HeaderPath, TargetName);
               if (TargetRange.start.line != 0 || TargetRange.start.character != 0 ||
                   TargetRange.end.line != 0 || TargetRange.end.character != 0) {
-                BestDecl.Name = TargetName;
-                BestDecl.NameRange = TargetRange;
-                BestHeaderPath = HeaderPath.str();
-                Found = true;
-                return true;
+                bool InsideClass = true;
+                if (ClassScopeRange.start.line != 0 || ClassScopeRange.end.line != 0) {
+                  if (TargetRange.start.line < ClassScopeRange.start.line ||
+                      TargetRange.end.line > ClassScopeRange.end.line)
+                    InsideClass = false;
+                }
+                if (InsideClass) {
+                  BestDecl.Name = TargetName;
+                  BestDecl.NameRange = TargetRange;
+                  BestHeaderPath = HeaderPath.str();
+                  Found = true;
+                  return true;
+                }
               }
             }
             return false;
@@ -4854,7 +4911,50 @@ PseudoModule::getHover(PathRef File, llvm::StringRef Code, Position Pos) {
           },
           /*MaxHeaders=*/100, /*MaxDepth=*/4);
 
-      if (!Found && OpTok) {
+      if (!Found && !CleanRec.empty()) {
+        std::vector<std::string> CandHeaders;
+        if (CleanRec.find("Small") != std::string::npos ||
+            CleanRec.find("Dense") != std::string::npos ||
+            CleanRec.find("String") != std::string::npos ||
+            CleanRec.find("Array") != std::string::npos) {
+          CandHeaders.push_back("llvm/ADT/" + CleanRec + ".h");
+          CandHeaders.push_back("llvm/Support/" + CleanRec + ".h");
+          if (CleanRec == "SmallString")
+            CandHeaders.push_back("llvm/ADT/SmallVector.h");
+        }
+        CandHeaders.push_back("clang/Basic/" + CleanRec + ".h");
+        CandHeaders.push_back("clang/AST/" + CleanRec + ".h");
+        CandHeaders.push_back(CleanRec + ".h");
+
+        for (const auto &Cand : CandHeaders) {
+          IncludeDirective Inc;
+          Inc.Written = Cand;
+          Inc.IsAngled = true;
+          std::string Resolved = resolveHeader(Inc, CurrentDir, IncludeDirs, *FS);
+          if (!Resolved.empty()) {
+            if (auto Info = getHeaderInfo(Resolved, *FS)) {
+              for (const auto &D : Info->Decls) {
+                if (D.Name == TargetName) {
+                  if (D.EnclosingClass == CleanRec ||
+                      D.EnclosingScope == CleanRec ||
+                      (!ResolvedRec.empty() && D.EnclosingClass == ResolvedRec) ||
+                      (CleanRec == "SmallString" && D.EnclosingClass == "SmallVector") ||
+                      llvm::StringRef(D.EnclosingClass).ends_with_insensitive(CleanRec)) {
+                    BestDecl = D;
+                    BestHeaderPath = Resolved;
+                    Found = true;
+                    break;
+                  }
+                }
+              }
+              if (Found)
+                break;
+            }
+          }
+        }
+      }
+
+      if (!Found && OpTok && CleanRec.empty()) {
         traverseIncludedHeaders(
             *this, File, Code, *FS,
             [&](const HeaderInfo &Info, llvm::StringRef HeaderPath) {
