@@ -808,6 +808,30 @@ void buildScopes(const pseudo::ForestNode *N, pseudo::Token::Index End,
     return;
   }
 
+  // 1b. Elaborated type specifier (e.g. forward declaration: class MacroInfo;)
+  if (Sym == pseudo::cxx::Symbol::elaborated_type_specifier) {
+    const pseudo::Token *NameTok = nullptr;
+    for (size_t I = 0; I < NodeTokens.size(); ++I) {
+      if (NodeTokens[I].Kind == tok::raw_identifier ||
+          NodeTokens[I].Kind == tok::identifier) {
+        NameTok = &NodeTokens[I];
+      }
+    }
+    if (NameTok) {
+      LocalDecl LD;
+      LD.Name = getOrigToken(*NameTok, Out).text().str();
+      LD.NameRange = tokenRange(*NameTok, Out, Code);
+      LD.DeclRange = nodeRange(StartTok, EndTok, Out, Code);
+      LD.DeclOffset = tokenStartOffset(*NameTok, Out);
+      LD.ScopeId = CurrentScopeId;
+      LD.EnclosingClass = std::string(EnclosingClass);
+      LD.IsDefinition = false;
+      LD.Kind = PseudoModule::DeclKind::Class;
+      Scopes[CurrentScopeId].Decls.push_back(std::move(LD));
+    }
+    return;
+  }
+
   // 2. Namespaces
   if (Sym == pseudo::cxx::Symbol::named_namespace_definition ||
       Sym == pseudo::cxx::Symbol::nested_namespace_definition ||
@@ -1767,6 +1791,39 @@ std::string PseudoModule::resolveHeader(
       return Cand.str().str();
   }
 
+  // Walk up parent directories of CurrentDir to locate include roots or project roots
+  llvm::SmallString<256> Cur(CurrentDir);
+  while (!Cur.empty()) {
+    llvm::SmallString<256> Cand(Cur);
+    llvm::sys::path::append(Cand, Inc.Written);
+    llvm::sys::path::remove_dots(Cand, /*remove_dot_dot=*/true);
+    if (Exists(Cand))
+      return Cand.str().str();
+
+    llvm::SmallString<256> CandInc(Cur);
+    llvm::sys::path::append(CandInc, "include", Inc.Written);
+    llvm::sys::path::remove_dots(CandInc, /*remove_dot_dot=*/true);
+    if (Exists(CandInc))
+      return CandInc.str().str();
+
+    llvm::SmallString<256> CandClang(Cur);
+    llvm::sys::path::append(CandClang, "clang", "include", Inc.Written);
+    llvm::sys::path::remove_dots(CandClang, /*remove_dot_dot=*/true);
+    if (Exists(CandClang))
+      return CandClang.str().str();
+
+    llvm::SmallString<256> CandLLVM(Cur);
+    llvm::sys::path::append(CandLLVM, "llvm", "include", Inc.Written);
+    llvm::sys::path::remove_dots(CandLLVM, /*remove_dot_dot=*/true);
+    if (Exists(CandLLVM))
+      return CandLLVM.str().str();
+
+    std::string Parent = llvm::sys::path::parent_path(Cur).str();
+    if (Parent == Cur)
+      break;
+    Cur = Parent;
+  }
+
   return "";
 }
 
@@ -1823,6 +1880,7 @@ PseudoModule::getHeaderInfo(llvm::StringRef HeaderPath,
                               : (Scope.Kind == ScopeKind::Class ? Scope.Name : "");
       HD.TypeName = D.TypeName;
       HD.Kind = D.Kind;
+      HD.IsDefinition = D.IsDefinition;
       Info->Decls.push_back(std::move(HD));
     }
   }
@@ -2137,6 +2195,7 @@ static std::string unwrapType(llvm::StringRef TypeName) {
         Inner = Inner.take_front(Comma).trim();
       return unwrapType(Inner);
     }
+    T = Outer;
   }
 
   size_t LastColons = T.rfind("::");
@@ -2219,6 +2278,10 @@ static std::string resolveExprType(
         return "Facilities";
       if (FnName == "fromRegistry")
         return "FeatureModuleSet";
+      if (FnName == "getLangOpts")
+        return "LangOptions";
+      if (FnName == "getPrintingPolicy")
+        return "PrintingPolicy";
       if (FnName == "try_emplace" || FnName == "insert")
         return "std::pair";
       if (FnName == "get" || FnName == "value" || FnName == "front" ||
@@ -2409,11 +2472,13 @@ static const LocalDecl *resolveTargetDecl(
       break;
     }
   }
+  std::string CleanRec;
   if (OpTok) {
     if (LhsTok) {
       std::string LhsName = getOrigToken(*LhsTok, Parsed).text().str();
       if (LhsName == "this") {
         std::string TargetClass = Scopes[BestScope].EnclosingClass;
+        CleanRec = TargetClass;
         if (!TargetClass.empty()) {
           for (const auto &CS : Scopes) {
             if (CS.Kind == ScopeKind::Class && CS.Name == TargetClass) {
@@ -2459,7 +2524,7 @@ static const LocalDecl *resolveTargetDecl(
         const LocalDecl *LhsDecl =
             lookupDecl(BestScope, LhsName, LhsOffset, Scopes, Code);
         if (LhsDecl && !LhsDecl->TypeName.empty()) {
-          std::string CleanRec = unwrapType(LhsDecl->TypeName);
+          CleanRec = unwrapType(LhsDecl->TypeName);
           for (const auto &CS : Scopes) {
             if (CS.Kind == ScopeKind::Class &&
                 (CS.Name == CleanRec || CS.EnclosingClass == CleanRec)) {
@@ -2491,7 +2556,8 @@ static const LocalDecl *resolveTargetDecl(
   if (!TargetDecl && OpTok &&
       (OpTok->Kind == tok::period || OpTok->Kind == tok::arrow)) {
     const LocalDecl *Candidate = findAnyDecl(TargetName, Scopes, ExpectsType);
-    if (Candidate && Candidate->IsMember)
+    if (Candidate && Candidate->IsMember &&
+        (CleanRec.empty() || Candidate->EnclosingClass == CleanRec))
       TargetDecl = Candidate;
   }
 
@@ -2828,6 +2894,54 @@ PseudoModule::locateSymbolAt(PathRef File, llvm::StringRef Code, Position Pos) {
       }
     }
 
+    if (!Found && (CleanRec == "LangOptions" || CleanRec == "LangOptionsBase")) {
+      traverseIncludedHeaders(
+          *this, File, Code, *FS,
+          [&](const HeaderInfo &Info, llvm::StringRef HeaderPath) {
+            if (HeaderPath.ends_with(".def")) {
+              Range TargetRange = findSymbolRangeInFile(HeaderPath, TargetName);
+              if (TargetRange.start.line != 0 || TargetRange.start.character != 0 ||
+                  TargetRange.end.line != 0 || TargetRange.end.character != 0) {
+                BestDecl.Name = TargetName;
+                BestDecl.NameRange = TargetRange;
+                BestHeaderPath = HeaderPath.str();
+                Found = true;
+                return true;
+              }
+            }
+            return false;
+          },
+          /*MaxHeaders=*/100, /*MaxDepth=*/4);
+    }
+
+    if (!Found && !CleanRec.empty()) {
+      // If member wasn't found in parsed decls, search the header that defines CleanRec
+      traverseIncludedHeaders(
+          *this, File, Code, *FS,
+          [&](const HeaderInfo &Info, llvm::StringRef HeaderPath) {
+            bool DefinesCleanRec = false;
+            for (const auto &D : Info.Decls) {
+              if (D.Name == CleanRec && PseudoModule::isTypeDecl(D.Kind)) {
+                DefinesCleanRec = true;
+                break;
+              }
+            }
+            if (DefinesCleanRec) {
+              Range TargetRange = findSymbolRangeInFile(HeaderPath, TargetName);
+              if (TargetRange.start.line != 0 || TargetRange.start.character != 0 ||
+                  TargetRange.end.line != 0 || TargetRange.end.character != 0) {
+                BestDecl.Name = TargetName;
+                BestDecl.NameRange = TargetRange;
+                BestHeaderPath = HeaderPath.str();
+                Found = true;
+                return true;
+              }
+            }
+            return false;
+          },
+          /*MaxHeaders=*/100, /*MaxDepth=*/4);
+    }
+
     if (!Found) {
       // Fallback: search for member TargetName in any included header class
       traverseIncludedHeaders(
@@ -2984,17 +3098,29 @@ PseudoModule::locateSymbolAt(PathRef File, llvm::StringRef Code, Position Pos) {
           if (D.Name == TargetName) {
             if (ExpectsType) {
               if (PseudoModule::isTypeDecl(D.Kind)) {
-                BestDecl = D;
-                BestHeaderPath = HeaderPath.str();
-                Found = true;
-                return true;
+                if (D.IsDefinition) {
+                  BestDecl = D;
+                  BestHeaderPath = HeaderPath.str();
+                  Found = true;
+                  return true;
+                } else if (!FallbackFound) {
+                  FallbackDecl = D;
+                  FallbackHeaderPath = HeaderPath.str();
+                  FallbackFound = true;
+                }
               }
             } else {
               if (!PseudoModule::isTypeDecl(D.Kind)) {
-                BestDecl = D;
-                BestHeaderPath = HeaderPath.str();
-                Found = true;
-                return true;
+                if (D.IsDefinition) {
+                  BestDecl = D;
+                  BestHeaderPath = HeaderPath.str();
+                  Found = true;
+                  return true;
+                } else if (!FallbackFound) {
+                  FallbackDecl = D;
+                  FallbackHeaderPath = HeaderPath.str();
+                  FallbackFound = true;
+                }
               } else if (!FallbackFound) {
                 FallbackDecl = D;
                 FallbackHeaderPath = HeaderPath.str();

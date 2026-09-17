@@ -2200,6 +2200,181 @@ TEST(PseudoModuleTest, FeatureModuleRegistryEntriesAndRegistryEntryMethodsGTD) {
   EXPECT_TRUE((*HMove)->contents.value.find("move") != std::string::npos);
 }
 
+TEST(PseudoModuleTest, SemaPrintingPolicyGTD) {
+  MockFS FS;
+  auto CDB = std::make_unique<MockCompilationDatabase>();
+
+  std::string ASTContextH = testPath("clang/AST/ASTContext.h");
+  std::string PrettyPrinterH = testPath("clang/AST/PrettyPrinter.h");
+  std::string LangOptionsH = testPath("clang/Basic/LangOptions.h");
+  std::string LangOptionsDef = testPath("clang/Basic/LangOptions.def");
+  std::string MacroInfoH = testPath("clang/Lex/MacroInfo.h");
+  std::string PreprocessorH = testPath("clang/Lex/Preprocessor.h");
+  std::string SemaH = testPath("clang/Sema/Sema.h");
+  std::string SemaCodeCompletionH = testPath("clang/Sema/SemaCodeCompletion.h");
+  std::string SourceFile = testPath("clang/lib/Sema/Sema.cpp");
+
+  FS.Files[PrettyPrinterH] = R"cpp(
+    namespace clang {
+    struct PrintingPolicy {
+      bool Bool;
+      LLVM_PREFERRED_TYPE(bool)
+      unsigned EntireContentsOfLargeArray : 1;
+    };
+    }
+  )cpp";
+
+  FS.Files[LangOptionsDef] = R"cpp(
+    LANGOPT(Bool, 1, 0, NotCompatible, "bool, true, and false keywords")
+  )cpp";
+
+  FS.Files[LangOptionsH] = R"cpp(
+    #include "clang/Basic/LangOptions.def"
+    namespace clang {
+    class LangOptionsBase {
+    };
+    class LangOptions : public LangOptionsBase {
+    };
+    }
+  )cpp";
+
+  FS.Files[ASTContextH] = R"cpp(
+    #include "clang/AST/PrettyPrinter.h"
+    #include "clang/Basic/LangOptions.h"
+    namespace clang {
+    class ASTContext {
+    public:
+      const PrintingPolicy &getPrintingPolicy() const;
+      const LangOptions &getLangOpts() const;
+      const char *getBoolName() const;
+    };
+    }
+  )cpp";
+
+  FS.Files[MacroInfoH] = R"cpp(
+    namespace clang {
+    class MacroInfo {
+    public:
+      bool isObjectLike() const;
+      unsigned getNumTokens() const;
+    };
+    }
+  )cpp";
+
+  FS.Files[PreprocessorH] = R"cpp(
+    #include "clang/Lex/MacroInfo.h"
+    namespace clang {
+    class Preprocessor {
+    public:
+      const MacroInfo *getMacroInfo(const char *Name) const;
+    };
+    }
+  )cpp";
+
+  FS.Files[SemaCodeCompletionH] = R"cpp(
+    namespace clang {
+    class MacroInfo;
+    }
+  )cpp";
+
+  FS.Files[SemaH] = R"cpp(
+    #include "clang/AST/ASTContext.h"
+    #include "clang/Lex/Preprocessor.h"
+    #include "clang/Sema/SemaCodeCompletion.h"
+    namespace clang {
+    class Sema {
+    public:
+      PrintingPolicy getPrintingPolicy(const ASTContext &Context, const Preprocessor &PP);
+    };
+    }
+  )cpp";
+
+  PseudoModule Mod;
+  Mod.setFSForTesting(&FS);
+  Mod.setCompilationDatabaseForTesting(CDB.get());
+
+  Annotations Code(R"cpp(
+    #include "clang/AST/ASTContext.h"
+    #include "clang/Lex/Preprocessor.h"
+    #include "clang/Sema/SemaCodeCompletion.h"
+    #include "clang/Sema/Sema.h"
+    namespace clang {
+    PrintingPolicy Sema::getPrintingPolicy(const ASTContext &Context,
+                                           const Preprocessor &PP) {
+      PrintingPolicy Policy = Context.$ctxPolicy^getPrintingPolicy();
+      Policy.Bool = Context.getLangOpts().$langOptBool^Bool;
+      if (!Policy.Bool) {
+        if (const $macroInfo^MacroInfo *BoolMacro = PP.getMacroInfo(Context.getBoolName())) {
+          Policy.Bool = BoolMacro->$isObj^isObjectLike();
+        }
+      }
+      Policy.$largeArray^EntireContentsOfLargeArray = false;
+      return Policy;
+    }
+    }
+  )cpp");
+
+  // 1. Context.getPrintingPolicy() must jump to ASTContext::getPrintingPolicy, NOT Sema::getPrintingPolicy
+  auto LocCtxPolicy = Mod.locateSymbolAt(SourceFile, Code.code(), Code.point("ctxPolicy"));
+  EXPECT_TRUE(bool(LocCtxPolicy)) << (LocCtxPolicy ? "" : llvm::toString(LocCtxPolicy.takeError()));
+  if (LocCtxPolicy && !LocCtxPolicy->empty()) {
+    EXPECT_EQ(LocCtxPolicy->front().Name, "getPrintingPolicy");
+    EXPECT_TRUE(llvm::StringRef(LocCtxPolicy->front().PreferredDeclaration.uri.file())
+                    .ends_with("ASTContext.h"))
+        << "Expected ASTContext.h, got " << LocCtxPolicy->front().PreferredDeclaration.uri.file();
+  } else {
+    ADD_FAILURE() << "LocCtxPolicy is empty";
+  }
+
+  // 2. Context.getLangOpts().Bool must jump to LangOptions.def
+  auto LocBool = Mod.locateSymbolAt(SourceFile, Code.code(), Code.point("langOptBool"));
+  EXPECT_TRUE(bool(LocBool)) << (LocBool ? "" : llvm::toString(LocBool.takeError()));
+  if (LocBool && !LocBool->empty()) {
+    EXPECT_EQ(LocBool->front().Name, "Bool");
+    EXPECT_TRUE(llvm::StringRef(LocBool->front().PreferredDeclaration.uri.file())
+                    .ends_with("LangOptions.def"))
+        << "Expected LangOptions.def, got " << LocBool->front().PreferredDeclaration.uri.file();
+  } else {
+    ADD_FAILURE() << "LocBool is empty";
+  }
+
+  // 3. MacroInfo must jump to MacroInfo class definition (MacroInfo.h), not forward decl
+  auto LocMacroInfo = Mod.locateSymbolAt(SourceFile, Code.code(), Code.point("macroInfo"));
+  EXPECT_TRUE(bool(LocMacroInfo)) << (LocMacroInfo ? "" : llvm::toString(LocMacroInfo.takeError()));
+  if (LocMacroInfo && !LocMacroInfo->empty()) {
+    EXPECT_EQ(LocMacroInfo->front().Name, "MacroInfo");
+    EXPECT_TRUE(llvm::StringRef(LocMacroInfo->front().PreferredDeclaration.uri.file())
+                    .ends_with("MacroInfo.h"))
+        << "Expected MacroInfo.h, got " << LocMacroInfo->front().PreferredDeclaration.uri.file();
+  } else {
+    ADD_FAILURE() << "LocMacroInfo is empty";
+  }
+
+  // 4. BoolMacro->isObjectLike() must jump to MacroInfo::isObjectLike in MacroInfo.h
+  auto LocIsObj = Mod.locateSymbolAt(SourceFile, Code.code(), Code.point("isObj"));
+  EXPECT_TRUE(bool(LocIsObj)) << (LocIsObj ? "" : llvm::toString(LocIsObj.takeError()));
+  if (LocIsObj && !LocIsObj->empty()) {
+    EXPECT_EQ(LocIsObj->front().Name, "isObjectLike");
+    EXPECT_TRUE(llvm::StringRef(LocIsObj->front().PreferredDeclaration.uri.file())
+                    .ends_with("MacroInfo.h"))
+        << "Expected MacroInfo.h, got " << LocIsObj->front().PreferredDeclaration.uri.file();
+  } else {
+    ADD_FAILURE() << "LocIsObj is empty";
+  }
+
+  // 5. Policy.EntireContentsOfLargeArray must jump to PrettyPrinter.h
+  auto LocLargeArray = Mod.locateSymbolAt(SourceFile, Code.code(), Code.point("largeArray"));
+  EXPECT_TRUE(bool(LocLargeArray)) << (LocLargeArray ? "" : llvm::toString(LocLargeArray.takeError()));
+  if (LocLargeArray && !LocLargeArray->empty()) {
+    EXPECT_EQ(LocLargeArray->front().Name, "EntireContentsOfLargeArray");
+    EXPECT_TRUE(llvm::StringRef(LocLargeArray->front().PreferredDeclaration.uri.file())
+                    .ends_with("PrettyPrinter.h"))
+        << "Expected PrettyPrinter.h, got " << LocLargeArray->front().PreferredDeclaration.uri.file();
+  } else {
+    ADD_FAILURE() << "LocLargeArray is empty";
+  }
+}
+
 } // namespace
 } // namespace clangd
 } // namespace clang

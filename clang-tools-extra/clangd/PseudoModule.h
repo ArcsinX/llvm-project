@@ -171,6 +171,7 @@ public:
     std::string EnclosingClass;
     std::string TypeName;
     DeclKind Kind = DeclKind::Unknown;
+    bool IsDefinition = false;
   };
 
   struct HeaderInfo {
