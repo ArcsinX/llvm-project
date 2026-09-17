@@ -9,9 +9,11 @@
 #ifndef LLVM_CLANG_TOOLS_EXTRA_CLANGD_PSEUDOMODULE_H
 #define LLVM_CLANG_TOOLS_EXTRA_CLANGD_PSEUDOMODULE_H
 
+#include "CodeComplete.h"
 #include "FeatureModule.h"
 #include "GlobalCompilationDatabase.h"
 #include "Protocol.h"
+#include "SemanticHighlighting.h"
 #include "XRefs.h"
 #include "support/ThreadsafeFS.h"
 #include "llvm/ADT/StringMap.h"
@@ -86,6 +88,22 @@ public:
 
   std::string getDocument(PathRef File);
 
+  /// Parse C++ code using clang-pseudo and compute Hover information.
+  llvm::Expected<std::optional<Hover>>
+  getHover(PathRef File, llvm::StringRef Code, Position Pos);
+
+  /// Parse C++ code using clang-pseudo and extract HighlightingTokens.
+  llvm::Expected<std::vector<HighlightingToken>>
+  getSemanticHighlightings(llvm::StringRef Code);
+
+  /// Parse C++ code using clang-pseudo and compute SemanticTokens.
+  llvm::Expected<SemanticTokens>
+  getSemanticTokens(llvm::StringRef Code);
+
+  /// Parse C++ code using clang-pseudo and compute code completions.
+  llvm::Expected<CompletionList>
+  getCompletions(PathRef File, llvm::StringRef Code, Position Pos);
+
   void onGoToDefinition(const TextDocumentPositionParams &Params,
                         Callback<std::vector<Location>> Reply);
   void onGoToDeclaration(const TextDocumentPositionParams &Params,
@@ -102,6 +120,12 @@ public:
                       Callback<std::vector<FoldingRange>> Reply);
   void onHover(const TextDocumentPositionParams &Params,
                Callback<std::optional<Hover>> Reply);
+  void onSemanticTokens(const SemanticTokensParams &Params,
+                        Callback<SemanticTokens> Reply);
+  void onSemanticTokensDelta(const SemanticTokensDeltaParams &Params,
+                             Callback<SemanticTokensOrDelta> Reply);
+  void onCompletion(const CompletionParams &Params,
+                    Callback<CompletionList> Reply);
 
   struct IncludeDirective {
     std::string Written;
@@ -144,6 +168,8 @@ public:
     Range NameRange;
     Range ScopeRange;
     std::string EnclosingScope;
+    std::string EnclosingClass;
+    std::string TypeName;
     DeclKind Kind = DeclKind::Unknown;
   };
 
@@ -175,15 +201,24 @@ private:
   void onCustomPseudoSymbols(const DocumentSymbolParams &Params,
                              Callback<std::vector<DocumentSymbol>> Reply);
 
+  bool shouldRunCompletion(const CompletionParams &Params) const;
+
   bool Enabled = true;
   bool PseudoOnly = false;
   bool SupportsHierarchicalDocumentSymbol = true;
   SymbolKindBitset SupportedSymbolKinds;
+  MarkupKind HoverContentFormat = MarkupKind::PlainText;
+  bool SupportsReferenceContainer = false;
+  bool SupportsCompletionLabelDetails = false;
+  CompletionItemKindBitset SupportedCompletionItemKinds;
+  CodeCompleteOptions BaseCodeCompleteOpts;
 
   const GlobalCompilationDatabase *TestCDB = nullptr;
   const ThreadsafeFS *TestFS = nullptr;
   mutable std::mutex HeaderCacheMutex;
   llvm::StringMap<std::shared_ptr<const HeaderInfo>> HeaderCache;
+  mutable std::mutex SemanticTokensMutex;
+  llvm::StringMap<SemanticTokens> LastSemanticTokens;
 };
 
 } // namespace clangd

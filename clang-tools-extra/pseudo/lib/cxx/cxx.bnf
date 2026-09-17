@@ -308,6 +308,7 @@ declaration-seq := declaration
 declaration-seq := declaration-seq declaration
 declaration := block-declaration
 declaration := nodeclspec-function-declaration
+declaration := function-declarator
 declaration := function-definition
 declaration := template-declaration
 declaration := deduction-guide
