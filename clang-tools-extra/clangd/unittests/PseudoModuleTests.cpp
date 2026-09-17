@@ -9,6 +9,7 @@
 #include "Annotations.h"
 #include "ClangdLSPServer.h"
 #include "ClangdServer.h"
+#include "DumpAST.h"
 #include "FeatureModule.h"
 #include "GlobalCompilationDatabase.h"
 #include "LSPClient.h"
@@ -16,6 +17,7 @@
 #include "PseudoModule.h"
 #include "SyncAPI.h"
 #include "TestFS.h"
+#include "TestTU.h"
 #include "support/Logger.h"
 #include "support/Threading.h"
 #include "llvm/Support/Error.h"
@@ -3173,7 +3175,8 @@ static void validateASTNodesRecursive(const ASTNode &Node, size_t &NodeCount,
 
   static const llvm::StringSet<> ValidRoles = {
       "declaration", "statement", "expression", "type",
-      "specifier",   "base",      "attribute",  "reference"};
+      "specifier",   "base",      "attribute",  "reference",
+      "constructor initializer"};
 
   if (Node.role.empty()) {
     Error = "Empty role in ASTNode kind=" + Node.kind + " detail=" + Node.detail;
@@ -3278,6 +3281,392 @@ TEST(PseudoModuleTest, ValidateASTSemaAndClangdServer) {
     EXPECT_GT(NodeCount, 100u)
         << "Expected rich AST with >100 nodes, got " << NodeCount;
   }
+}
+
+static void checkDeclarationMatch(const ASTNode &Reg, const ASTNode &Pseudo,
+                                  llvm::StringRef CodeSnippet) {
+  std::vector<const ASTNode *> RegDecls;
+  std::vector<const ASTNode *> PseudoDecls;
+  std::function<void(const ASTNode &, std::vector<const ASTNode *> &)> CollectDecls =
+      [&](const ASTNode &N, std::vector<const ASTNode *> &Out) {
+        if (N.role == "declaration" && N.kind != "TranslationUnit" &&
+            N.arcana.find("implicit") == std::string::npos)
+          Out.push_back(&N);
+        for (const auto &C : N.children)
+          CollectDecls(C, Out);
+      };
+  CollectDecls(Reg, RegDecls);
+  CollectDecls(Pseudo, PseudoDecls);
+
+  for (const auto *R : RegDecls) {
+    auto It = llvm::find_if(PseudoDecls, [&](const ASTNode *P) {
+      return P->detail == R->detail && P->kind == R->kind;
+    });
+    EXPECT_NE(It, PseudoDecls.end())
+        << "Expected declaration kind=" << R->kind << " detail='" << R->detail
+        << "' from regular AST not found in pseudoparser AST for snippet:\n"
+        << CodeSnippet;
+  }
+}
+
+TEST(PseudoModuleTest, CompareASTWithRegularAST) {
+  std::vector<std::string> Snippets = {
+      R"cpp(
+        struct Base {};
+        struct UpdateIndexCallbacks : public Base {
+          int x;
+        };
+      )cpp",
+      R"cpp(
+        struct Base {};
+        class DraftStoreFS : public Base {
+          int y;
+        };
+      )cpp",
+      R"cpp(
+        struct Metric {
+          constexpr Metric(const char*, int, const char*) {}
+        };
+        static constexpr Metric TweakAvailable("tweak_available", 1, "tweak_id");
+      )cpp",
+      R"cpp(
+        struct Lock { Lock(int); };
+        struct Span { Span(const char*); };
+        void foo() {
+          int m = 0;
+          Lock l(m);
+          Span s("abc");
+        }
+      )cpp",
+      R"cpp(
+        struct Options {};
+        struct Server {
+          struct Opts {
+            operator Options() const;
+          };
+        };
+        Server::Opts::operator Options() const {
+          return {};
+        }
+      )cpp",
+      R"cpp(
+        class Server {
+          Server(int x);
+          ~Server();
+        };
+        Server::Server(int x) {}
+        Server::~Server() {}
+      )cpp",
+      R"cpp(
+        struct Context {};
+        struct Provider {};
+        class Server {
+          Context createConfiguredContextProvider(const Provider *P);
+        };
+        Context Server::createConfiguredContextProvider(const Provider *P) {
+          return {};
+        }
+      )cpp",
+      R"cpp(
+        void foo() {
+          struct Impl {
+            int a;
+            void operator()() {}
+          };
+        }
+      )cpp",
+      R"cpp(
+        namespace clang {
+        namespace clangd {
+        namespace {
+        struct Metric {
+          constexpr Metric(const char*, int) {}
+        };
+        static constexpr Metric TweakAvailable("tweak", 1);
+        struct UpdateIndexCallbacks {
+          int *FIndex;
+          UpdateIndexCallbacks(int *FIndex) : FIndex(FIndex) {}
+          void onPreambleAST(int Path) {}
+        };
+        class DraftStoreFS {
+        public:
+          DraftStoreFS(int Base) : Base(Base) {}
+          int viewImpl() const { return 0; }
+        private:
+          int Base;
+        };
+        }
+        struct Options {
+          int AsyncThreadsCount;
+          operator int() const { return AsyncThreadsCount; }
+        };
+        class ClangdServer {
+        public:
+          ClangdServer(int CDB) {}
+          ~ClangdServer() {}
+          void addDocument(int File) {}
+          int createConfiguredContextProvider(int Provider) {
+            struct Impl {
+              int Provider;
+              Impl(int Provider) : Provider(Provider) {}
+              int operator()(int File) {
+                int Params = 0;
+                return Params;
+              }
+            };
+            return 0;
+          }
+        };
+        int tweakSelection(int Sel) { return Sel; }
+        }
+        }
+      )cpp",
+  };
+
+  PseudoModule Mod;
+  Mod.setPseudoOnly(true);
+
+  for (const auto &Code : Snippets) {
+    TestTU TU;
+    TU.Code = Code;
+    auto AST = TU.build();
+    auto RegNode = clang::clangd::dumpAST(
+        DynTypedNode::create(*AST.getASTContext().getTranslationUnitDecl()),
+        AST.getTokens(), AST.getASTContext());
+
+    auto PseudoRes = Mod.getAST("test.cpp", Code);
+    ASSERT_TRUE(bool(PseudoRes));
+    ASSERT_TRUE(bool(*PseudoRes));
+    checkDeclarationMatch(RegNode, **PseudoRes, Code);
+  }
+}
+
+TEST(PseudoModuleTest, ClangdServerValidateAllNodeTypes) {
+  PseudoModule Mod;
+  Mod.setPseudoOnly(true);
+  std::string FilePath =
+      findRepoSourceFile("clang-tools-extra/clangd/ClangdServer.cpp");
+  ASSERT_FALSE(FilePath.empty()) << "Could not locate ClangdServer.cpp";
+  auto Buf = llvm::MemoryBuffer::getFile(FilePath);
+  ASSERT_TRUE(bool(Buf));
+  auto ASTRes = Mod.getAST(FilePath, (*Buf)->getBuffer());
+  ASSERT_TRUE(bool(ASTRes));
+  ASSERT_TRUE(bool(*ASTRes));
+  const ASTNode &TU = **ASTRes;
+
+  std::vector<const ASTNode *> AllDecls;
+  std::function<void(const ASTNode &)> CollectAllDecls = [&](const ASTNode &N) {
+    if (N.role == "declaration" && N.kind != "TranslationUnit")
+      AllDecls.push_back(&N);
+    for (const auto &C : N.children)
+      CollectAllDecls(C);
+  };
+  CollectAllDecls(TU);
+
+  auto FindDecl = [&](llvm::StringRef Kind, llvm::StringRef Detail) -> const ASTNode * {
+    for (const auto *D : AllDecls) {
+      if (D->kind == Kind && D->detail == Detail)
+        return D;
+    }
+    return nullptr;
+  };
+
+  // Verify struct/class records
+  EXPECT_NE(FindDecl("CXXRecord", "UpdateIndexCallbacks"), nullptr);
+  EXPECT_NE(FindDecl("CXXRecord", "DraftStoreFS"), nullptr);
+  EXPECT_NE(FindDecl("CXXRecord", "Impl"), nullptr);
+
+  // Verify constructors and destructors
+  EXPECT_NE(FindDecl("CXXConstructor", ""), nullptr);
+  EXPECT_NE(FindDecl("CXXDestructor", ""), nullptr);
+
+  // Verify methods and conversion operators
+  EXPECT_NE(FindDecl("CXXConversion", "operator Options"), nullptr);
+  EXPECT_NE(FindDecl("CXXMethod", "createConfiguredContextProvider"), nullptr);
+  EXPECT_NE(FindDecl("CXXMethod", "operator()"), nullptr);
+  EXPECT_NE(FindDecl("CXXMethod", "optsForTest"), nullptr);
+
+  // Verify free functions
+  EXPECT_NE(FindDecl("Function", "tweakSelection"), nullptr);
+  EXPECT_NE(FindDecl("Function", "tryConvertToRename"), nullptr);
+
+  // Verify variables
+  EXPECT_NE(FindDecl("Var", "TweakAvailable"), nullptr);
+  EXPECT_NE(FindDecl("Var", "TweakAttempt"), nullptr);
+  EXPECT_NE(FindDecl("Var", "TweakFailed"), nullptr);
+  EXPECT_NE(FindDecl("Var", "Ctx"), nullptr);
+
+  // Verify fields inside classes
+  static const char *const ExpectedFields[] = {
+      "FIndex", "ServerCallbacks", "TFS", "Stdlib", "Tasks",
+      "CollectInactiveRegions", "Base", "DirtyFiles", "Provider",
+      "Publish", "PublishMu"};
+  for (const char *F : ExpectedFields) {
+    EXPECT_NE(FindDecl("Field", F), nullptr)
+        << "Expected field '" << F << "' not found in AST";
+  }
+
+  // Verify exact counts of record, function, conversion, and field declarations
+  size_t RecordCount = 0;
+  size_t FunctionCount = 0;
+  size_t ConversionCount = 0;
+  size_t FieldCount = 0;
+  for (const auto *D : AllDecls) {
+    if (D->kind == "CXXRecord")
+      ++RecordCount;
+    else if (D->kind == "Function")
+      ++FunctionCount;
+    else if (D->kind == "CXXConversion")
+      ++ConversionCount;
+    else if (D->kind == "Field")
+      ++FieldCount;
+  }
+  EXPECT_EQ(RecordCount, 3u);
+  EXPECT_EQ(FunctionCount, 2u);
+  EXPECT_EQ(ConversionCount, 1u);
+  EXPECT_EQ(FieldCount, 11u);
+
+  // Validate inner nodes and ranges across the entire ClangdServer.cpp AST
+  size_t TotalNodes = 0;
+  size_t ValidRanges = 0;
+  std::map<std::string, size_t> RoleCounts;
+  std::map<std::string, size_t> KindCounts;
+  std::vector<std::string> RangeErrors;
+
+  std::function<void(const ASTNode &, const ASTNode *)> CheckAllNodes =
+      [&](const ASTNode &N, const ASTNode *Parent) {
+        ++TotalNodes;
+        RoleCounts[N.role]++;
+        KindCounts[N.kind]++;
+
+        if (!N.range) {
+          if (N.kind != "TranslationUnit")
+            RangeErrors.push_back(N.role + "/" + N.kind + " '" + N.detail + "': missing range");
+        } else {
+          Position S = N.range->start;
+          Position E = N.range->end;
+          if (S.line > E.line || (S.line == E.line && S.character > E.character)) {
+            RangeErrors.push_back(N.role + "/" + N.kind + " '" + N.detail + "': inverted range (" +
+                                  std::to_string(S.line) + ":" + std::to_string(S.character) + " - " +
+                                  std::to_string(E.line) + ":" + std::to_string(E.character) + ")");
+          } else {
+            ++ValidRanges;
+          }
+        }
+
+        if (Parent && Parent->range && N.range) {
+          Position PS = Parent->range->start;
+          Position PE = Parent->range->end;
+          Position CS = N.range->start;
+          Position CE = N.range->end;
+          bool StartValid = (PS.line < CS.line) || (PS.line == CS.line && PS.character <= CS.character);
+          bool EndValid = (CE.line < PE.line) || (CE.line == PE.line && CE.character <= PE.character);
+          if (!StartValid || !EndValid) {
+            RangeErrors.push_back(
+                "Containment violation: parent " + Parent->role + "/" + Parent->kind +
+                " (" + std::to_string(PS.line) + ":" + std::to_string(PS.character) + " - " +
+                std::to_string(PE.line) + ":" + std::to_string(PE.character) +
+                ") does not contain child " + N.role + "/" + N.kind + " '" + N.detail + "' (" +
+                std::to_string(CS.line) + ":" + std::to_string(CS.character) + " - " +
+                std::to_string(CE.line) + ":" + std::to_string(CE.character) + ")");
+          }
+        }
+
+        for (const auto &C : N.children)
+          CheckAllNodes(C, &N);
+      };
+  CheckAllNodes(TU, nullptr);
+
+  for (const auto &Err : RangeErrors) {
+    ADD_FAILURE() << "Range error: " << Err;
+  }
+
+  // Ensure inner statement and expression nodes are present in significant numbers
+  EXPECT_GT(RoleCounts["statement"], 50u)
+      << "Expected >50 statements in ClangdServer.cpp, got " << RoleCounts["statement"];
+  EXPECT_GT(RoleCounts["expression"], 100u)
+      << "Expected >100 expressions in ClangdServer.cpp, got " << RoleCounts["expression"];
+  EXPECT_GT(KindCounts["Compound"], 20u);
+  EXPECT_GT(KindCounts["Call"], 30u);
+  EXPECT_GT(KindCounts["Member"], 20u);
+  EXPECT_GT(KindCounts["If"], 10u);
+  EXPECT_GT(KindCounts["Return"], 10u);
+
+  // Validate specific inner nodes and range selections
+  std::vector<const ASTNode *> AllMemberInits;
+  std::vector<const ASTNode *> AllParmVars;
+  std::vector<const ASTNode *> AllCalls;
+  std::vector<const ASTNode *> AllMembers;
+  std::function<void(const ASTNode &)> CollectAllInner = [&](const ASTNode &N) {
+    if (N.role == "constructor initializer" && N.kind == "MemberInitializer")
+      AllMemberInits.push_back(&N);
+    else if (N.role == "declaration" && N.kind == "ParmVar")
+      AllParmVars.push_back(&N);
+    else if (N.role == "expression" && N.kind == "Call")
+      AllCalls.push_back(&N);
+    else if (N.role == "expression" && N.kind == "Member")
+      AllMembers.push_back(&N);
+    for (const auto &C : N.children)
+      CollectAllInner(C);
+  };
+  CollectAllInner(TU);
+
+  // Verify constructor initializers
+  auto FindInit = [&](llvm::StringRef Name) -> const ASTNode * {
+    for (const auto *Init : AllMemberInits) {
+      if (Init->detail == Name)
+        return Init;
+    }
+    return nullptr;
+  };
+  EXPECT_NE(FindInit("FIndex"), nullptr);
+  EXPECT_NE(FindInit("ServerCallbacks"), nullptr);
+  EXPECT_NE(FindInit("TFS"), nullptr);
+  EXPECT_NE(FindInit("Tasks"), nullptr);
+  EXPECT_NE(FindInit("CollectInactiveRegions"), nullptr);
+  EXPECT_NE(FindInit("Base"), nullptr);
+  EXPECT_NE(FindInit("DirtyFiles"), nullptr);
+
+  const auto *BaseInit = FindInit("Base");
+  ASSERT_NE(BaseInit, nullptr);
+  ASSERT_TRUE(BaseInit->range.has_value());
+  auto SubInit = Mod.getAST(FilePath, (*Buf)->getBuffer(), *BaseInit->range);
+  ASSERT_TRUE(bool(SubInit));
+  ASSERT_TRUE(bool(*SubInit));
+  EXPECT_EQ((*SubInit)->kind, "MemberInitializer");
+  EXPECT_EQ((*SubInit)->detail, "Base");
+
+  // Verify inner member calls and range selection
+  auto FindCall = [&](llvm::StringRef CalleeName) -> const ASTNode * {
+    for (const auto *C : AllCalls) {
+      for (const auto &Child : C->children) {
+        if (Child.kind == "Member" && Child.detail == CalleeName)
+          return C;
+      }
+    }
+    return nullptr;
+  };
+  EXPECT_NE(FindCall("getPreprocessor"), nullptr);
+  EXPECT_NE(FindCall("getCompilerInvocation"), nullptr);
+  EXPECT_NE(FindCall("updatePreamble"), nullptr);
+
+  const auto *CallPP = FindCall("getPreprocessor");
+  ASSERT_NE(CallPP, nullptr);
+  ASSERT_TRUE(CallPP->range.has_value());
+  auto SubCall = Mod.getAST(FilePath, (*Buf)->getBuffer(), *CallPP->range);
+  ASSERT_TRUE(bool(SubCall));
+  ASSERT_TRUE(bool(*SubCall));
+  EXPECT_EQ((*SubCall)->kind, "Call");
+
+  // Verify condition variable Loc
+  const auto *LocDecl = FindDecl("Var", "Loc");
+  ASSERT_NE(LocDecl, nullptr);
+  ASSERT_TRUE(LocDecl->range.has_value());
+  auto SubLoc = Mod.getAST(FilePath, (*Buf)->getBuffer(), *LocDecl->range);
+  ASSERT_TRUE(bool(SubLoc));
+  ASSERT_TRUE(bool(*SubLoc));
+  EXPECT_EQ((*SubLoc)->kind, "Var");
+  EXPECT_EQ((*SubLoc)->detail, "Loc");
 }
 
 } // namespace
