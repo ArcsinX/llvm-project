@@ -725,6 +725,346 @@ const LocalDecl *lookupDecl(size_t ScopeId, llvm::StringRef Name,
   return FallbackMatch;
 }
 
+void scanOpaqueDeclarations(pseudo::Token::Index StartTok,
+                            pseudo::Token::Index EndTok,
+                            const ParseOutput &Out, llvm::StringRef Code,
+                            std::vector<LexicalScope> &Scopes,
+                            size_t CurrentScopeId,
+                            llvm::StringRef EnclosingClass = "") {
+  auto Tokens = Out.ParseableStream.tokens();
+  if (StartTok >= EndTok || StartTok >= Tokens.size())
+    return;
+  if (EndTok > Tokens.size())
+    EndTok = Tokens.size();
+
+  size_t CurScopeId = CurrentScopeId;
+  std::vector<size_t> ScopeStack;
+
+  size_t I = StartTok;
+  while (I < EndTok) {
+    auto TK = Tokens[I].Kind;
+    if (TK == tok::comment) {
+      ++I;
+      continue;
+    }
+    if (TK == tok::semi) {
+      ++I;
+      continue;
+    }
+    if (TK == tok::r_brace) {
+      if (!ScopeStack.empty()) {
+        Scopes[CurScopeId].EndOffset = tokenEndOffset(Tokens[I], Out);
+        CurScopeId = ScopeStack.back();
+        ScopeStack.pop_back();
+      }
+      ++I;
+      continue;
+    }
+    if (TK == tok::l_brace) {
+      size_t NewScopeId = Scopes.size();
+      LexicalScope S;
+      S.Id = NewScopeId;
+      S.ParentId = CurScopeId;
+      S.Kind = ScopeKind::Block;
+      S.EnclosingClass = Scopes[CurScopeId].EnclosingClass;
+      S.StartOffset = tokenStartOffset(Tokens[I], Out);
+      S.EndOffset = tokenEndOffset(Tokens[I], Out);
+      S.ScopeRange = tokenRange(Tokens[I], Out, Code);
+      Scopes[CurScopeId].Children.push_back(NewScopeId);
+      Scopes.push_back(std::move(S));
+      ScopeStack.push_back(CurScopeId);
+      CurScopeId = NewScopeId;
+      ++I;
+      continue;
+    }
+
+    if (TK == tok::kw_class || TK == tok::kw_struct) {
+      size_t J = I + 1;
+      const pseudo::Token *NameTok = nullptr;
+      size_t K = J;
+      while (K < EndTok && Tokens[K].Kind != tok::l_brace &&
+             Tokens[K].Kind != tok::colon && Tokens[K].Kind != tok::semi) {
+        if (Tokens[K].Kind == tok::raw_identifier ||
+            Tokens[K].Kind == tok::identifier) {
+          NameTok = &Tokens[K];
+        }
+        ++K;
+      }
+      if (NameTok) {
+        std::string ClassName = getOrigToken(*NameTok, Out).text().str();
+        while (K < EndTok && Tokens[K].Kind != tok::l_brace &&
+               Tokens[K].Kind != tok::semi)
+          ++K;
+        if (K < EndTok && Tokens[K].Kind == tok::l_brace) {
+          LocalDecl LD;
+          LD.Name = ClassName;
+          LD.NameRange = tokenRange(*NameTok, Out, Code);
+          LD.DeclRange = Range{tokenRange(Tokens[I], Out, Code).start,
+                               tokenRange(Tokens[K], Out, Code).end};
+          LD.DeclOffset = tokenStartOffset(*NameTok, Out);
+          LD.ScopeId = CurScopeId;
+          LD.EnclosingClass = Scopes[CurScopeId].EnclosingClass;
+          LD.IsDefinition = true;
+          LD.Kind = PseudoModule::DeclKind::Class;
+          Scopes[CurScopeId].Decls.push_back(std::move(LD));
+
+          size_t NewScopeId = Scopes.size();
+          LexicalScope S;
+          S.Id = NewScopeId;
+          S.ParentId = CurScopeId;
+          S.Kind = ScopeKind::Class;
+          S.Name = ClassName;
+          S.EnclosingClass = ClassName;
+          S.StartOffset = tokenStartOffset(Tokens[K], Out);
+          S.EndOffset = tokenEndOffset(Tokens[K], Out);
+          S.ScopeRange = tokenRange(Tokens[K], Out, Code);
+          Scopes[CurScopeId].Children.push_back(NewScopeId);
+          Scopes.push_back(std::move(S));
+          ScopeStack.push_back(CurScopeId);
+          CurScopeId = NewScopeId;
+          I = K + 1;
+          continue;
+        } else if (K < EndTok && Tokens[K].Kind == tok::semi) {
+          LocalDecl LD;
+          LD.Name = ClassName;
+          LD.NameRange = tokenRange(*NameTok, Out, Code);
+          LD.DeclRange = Range{tokenRange(Tokens[I], Out, Code).start,
+                               tokenRange(Tokens[K], Out, Code).end};
+          LD.DeclOffset = tokenStartOffset(*NameTok, Out);
+          LD.ScopeId = CurScopeId;
+          LD.EnclosingClass = Scopes[CurScopeId].EnclosingClass;
+          LD.IsDefinition = false;
+          LD.Kind = PseudoModule::DeclKind::Class;
+          Scopes[CurScopeId].Decls.push_back(std::move(LD));
+          I = K + 1;
+          continue;
+        }
+      }
+    }
+
+    // Find statement boundary
+    int ParenDepth = 0;
+    size_t StmtEnd = I;
+    while (StmtEnd < EndTok) {
+      auto K = Tokens[StmtEnd].Kind;
+      if (K == tok::l_paren)
+        ++ParenDepth;
+      else if (K == tok::r_paren && ParenDepth > 0)
+        --ParenDepth;
+      else if ((K == tok::l_brace || K == tok::r_brace) && ParenDepth == 0)
+        break;
+      else if (K == tok::semi && ParenDepth == 0) {
+        ++StmtEnd;
+        break;
+      }
+      ++StmtEnd;
+    }
+
+    if (TK == tok::kw_if || TK == tok::kw_else || TK == tok::kw_while ||
+        TK == tok::kw_do || TK == tok::kw_switch || TK == tok::kw_case ||
+        TK == tok::kw_default || TK == tok::kw_return || TK == tok::kw_break ||
+        TK == tok::kw_continue || TK == tok::kw_goto || TK == tok::kw_throw ||
+        TK == tok::kw_try || TK == tok::kw_catch || TK == tok::kw_delete ||
+        TK == tok::kw_sizeof) {
+      I = StmtEnd;
+      continue;
+    }
+
+    // Check for range-for
+    if (TK == tok::kw_for) {
+      if (I + 1 < StmtEnd && Tokens[I + 1].Kind == tok::l_paren) {
+        size_t ColonIdx = I + 2;
+        int PDepth = 1;
+        while (ColonIdx < StmtEnd) {
+          if (Tokens[ColonIdx].Kind == tok::l_paren)
+            ++PDepth;
+          else if (Tokens[ColonIdx].Kind == tok::r_paren) {
+            --PDepth;
+            if (PDepth == 0)
+              break;
+          } else if (Tokens[ColonIdx].Kind == tok::colon && PDepth == 1) {
+            break;
+          }
+          ++ColonIdx;
+        }
+        if (ColonIdx < StmtEnd && Tokens[ColonIdx].Kind == tok::colon) {
+          size_t TypeStartTok = I + 2;
+          size_t NameTokIdx = ColonIdx - 1;
+          while (NameTokIdx > TypeStartTok &&
+                 Tokens[NameTokIdx].Kind != tok::raw_identifier &&
+                 Tokens[NameTokIdx].Kind != tok::identifier)
+            --NameTokIdx;
+          if (NameTokIdx >= TypeStartTok &&
+              (Tokens[NameTokIdx].Kind == tok::raw_identifier ||
+               Tokens[NameTokIdx].Kind == tok::identifier)) {
+            const auto &NameTok = Tokens[NameTokIdx];
+            std::string VarName = getOrigToken(NameTok, Out).text().str();
+            size_t TStart = tokenStartOffset(Tokens[TypeStartTok], Out);
+            size_t TEnd = (NameTokIdx > TypeStartTok)
+                              ? tokenEndOffset(Tokens[NameTokIdx - 1], Out)
+                              : tokenStartOffset(NameTok, Out);
+            std::string TypeName;
+            if (TStart < TEnd && TEnd <= Code.size())
+              TypeName = Code.slice(TStart, TEnd).trim().str();
+            LocalDecl LD;
+            LD.Name = VarName;
+            LD.TypeName = TypeName;
+            LD.NameRange = tokenRange(NameTok, Out, Code);
+            LD.DeclRange = Range{offsetToPosition(Code, TStart),
+                                 tokenRange(NameTok, Out, Code).end};
+            LD.DeclOffset = tokenStartOffset(NameTok, Out);
+            LD.ScopeId = CurScopeId;
+            LD.IsMember = false;
+            LD.IsDefinition = true;
+            LD.Kind = PseudoModule::DeclKind::Variable;
+            Scopes[CurScopeId].Decls.push_back(std::move(LD));
+          }
+        }
+      }
+      I = StmtEnd;
+      continue;
+    }
+
+    // Extract declarations from statement Tokens[I .. StmtEnd)
+    size_t TIdx = I;
+    while (TIdx < StmtEnd) {
+      auto CurK = Tokens[TIdx].Kind;
+      if (CurK == tok::kw_const || CurK == tok::kw_volatile ||
+          CurK == tok::kw_static || CurK == tok::kw_auto ||
+          CurK == tok::kw_inline || CurK == tok::kw_signed ||
+          CurK == tok::kw_unsigned || CurK == tok::kw_long ||
+          CurK == tok::kw_short || CurK == tok::kw_struct ||
+          CurK == tok::kw_class || CurK == tok::kw_typename ||
+          CurK == tok::kw_extern || CurK == tok::kw_void ||
+          CurK == tok::kw_bool || CurK == tok::kw_char ||
+          CurK == tok::kw_int || CurK == tok::kw_float ||
+          CurK == tok::kw_double || CurK == tok::coloncolon ||
+          CurK == tok::star || CurK == tok::amp || CurK == tok::ampamp) {
+        ++TIdx;
+        continue;
+      }
+      if (CurK == tok::less) {
+        int Depth = 1;
+        ++TIdx;
+        while (TIdx < StmtEnd && Depth > 0) {
+          if (Tokens[TIdx].Kind == tok::less)
+            ++Depth;
+          else if (Tokens[TIdx].Kind == tok::greater)
+            --Depth;
+          ++TIdx;
+        }
+        continue;
+      }
+      if (CurK == tok::raw_identifier || CurK == tok::identifier) {
+        if (TIdx + 1 < StmtEnd && Tokens[TIdx + 1].Kind == tok::coloncolon) {
+          TIdx += 2;
+          continue;
+        }
+        if (TIdx + 1 < StmtEnd && Tokens[TIdx + 1].Kind == tok::less) {
+          ++TIdx;
+          continue;
+        }
+        if (TIdx + 1 < StmtEnd) {
+          auto NextK = Tokens[TIdx + 1].Kind;
+          if (NextK == tok::raw_identifier || NextK == tok::identifier ||
+              NextK == tok::star || NextK == tok::amp || NextK == tok::ampamp) {
+            ++TIdx;
+            continue;
+          }
+        }
+      }
+      break;
+    }
+
+    if (TIdx > I && TIdx < StmtEnd) {
+      size_t TypeStart = tokenStartOffset(Tokens[I], Out);
+      size_t TypeEnd = tokenEndOffset(Tokens[TIdx - 1], Out);
+      std::string DeclType;
+      if (TypeStart < TypeEnd && TypeEnd <= Code.size())
+        DeclType = Code.slice(TypeStart, TypeEnd).trim().str();
+
+      while (TIdx < StmtEnd &&
+             (Tokens[TIdx].Kind == tok::raw_identifier ||
+              Tokens[TIdx].Kind == tok::identifier)) {
+        const auto &NameTok = Tokens[TIdx];
+        std::string VarName = getOrigToken(NameTok, Out).text().str();
+        size_t NameEnd = TIdx + 1;
+        bool IsFunc = false;
+        if (NameEnd < StmtEnd && Tokens[NameEnd].Kind == tok::l_paren) {
+          if (llvm::StringRef(DeclType).starts_with("void") ||
+              Scopes[CurScopeId].Kind == ScopeKind::Class)
+            IsFunc = true;
+        }
+
+        LocalDecl LD;
+        LD.Name = VarName;
+        LD.TypeName = DeclType;
+        LD.NameRange = tokenRange(NameTok, Out, Code);
+        LD.DeclRange = Range{offsetToPosition(Code, TypeStart),
+                             tokenRange(Tokens[StmtEnd - 1], Out, Code).end};
+        LD.DeclOffset = tokenStartOffset(NameTok, Out);
+        LD.ScopeId = CurScopeId;
+        LD.IsMember = (Scopes[CurScopeId].Kind == ScopeKind::Class);
+        LD.EnclosingClass = Scopes[CurScopeId].EnclosingClass;
+        LD.IsDefinition = true;
+        LD.Kind = IsFunc ? PseudoModule::DeclKind::Function
+                         : PseudoModule::DeclKind::Variable;
+
+        if (LD.TypeName == "auto" || LD.TypeName == "const auto &" ||
+            LD.TypeName == "auto &") {
+          for (size_t K = NameEnd; K < StmtEnd; ++K) {
+            if (Tokens[K].Kind == tok::raw_identifier ||
+                Tokens[K].Kind == tok::identifier) {
+              llvm::StringRef Word = getOrigToken(Tokens[K], Out).text();
+              if (Word == "instantiate" && K >= 2 &&
+                  Tokens[K - 1].Kind == tok::period) {
+                llvm::StringRef BaseVar =
+                    getOrigToken(Tokens[K - 2], Out).text();
+                const LocalDecl *BD = lookupDecl(
+                    CurScopeId, BaseVar, tokenStartOffset(Tokens[K], Out),
+                    Scopes, Code);
+                if (BD && !BD->TypeName.empty()) {
+                  if (BD->TypeName.find("entry") != llvm::StringRef::npos)
+                    LD.TypeName = "FeatureModule";
+                }
+              }
+            }
+          }
+        }
+
+        Scopes[CurScopeId].Decls.push_back(std::move(LD));
+
+        int PDepth = 0;
+        int BDepth = 0;
+        while (NameEnd < StmtEnd) {
+          auto K = Tokens[NameEnd].Kind;
+          if (K == tok::l_paren)
+            ++PDepth;
+          else if (K == tok::r_paren && PDepth > 0)
+            --PDepth;
+          else if (K == tok::l_brace)
+            ++BDepth;
+          else if (K == tok::r_brace && BDepth > 0)
+            --BDepth;
+          else if (K == tok::comma && PDepth == 0 && BDepth == 0) {
+            ++NameEnd;
+            break;
+          } else if (K == tok::semi && PDepth == 0 && BDepth == 0) {
+            break;
+          }
+          ++NameEnd;
+        }
+        TIdx = NameEnd;
+        while (TIdx < StmtEnd &&
+               (Tokens[TIdx].Kind == tok::star || Tokens[TIdx].Kind == tok::amp))
+          ++TIdx;
+      }
+    }
+
+    I = StmtEnd;
+  }
+}
+
 void buildScopes(const pseudo::ForestNode *N, pseudo::Token::Index End,
                  const ParseOutput &Out, llvm::StringRef Code,
                  std::vector<LexicalScope> &Scopes, size_t &CurrentScopeId,
@@ -742,6 +1082,12 @@ void buildScopes(const pseudo::ForestNode *N, pseudo::Token::Index End,
         (It != Out.Disambig.end() && It->second < Alts.size()) ? It->second : 0;
     buildScopes(Alts[AltIdx], End, Out, Code, Scopes, CurrentScopeId,
                 EnclosingClass, DeclaredType);
+    return;
+  }
+
+  if (N->kind() == pseudo::ForestNode::Opaque) {
+    scanOpaqueDeclarations(N->startTokenIndex(), End, Out, Code, Scopes,
+                           CurrentScopeId, EnclosingClass);
     return;
   }
 
@@ -960,12 +1306,24 @@ void buildScopes(const pseudo::ForestNode *N, pseudo::Token::Index End,
   // 4. Parameter declaration
   if (Sym == pseudo::cxx::Symbol::parameter_declaration) {
     const pseudo::Token *NameTok = nullptr;
-    const pseudo::Token *TypeTok = nullptr;
+    size_t NameTokIdx = pseudo::Token::Invalid;
+    int AngleDepth = 0;
     bool HasExplicitType = false;
     for (size_t I = 0; I < NodeTokens.size(); ++I) {
       if (NodeTokens[I].Kind == tok::equal || NodeTokens[I].Kind == tok::comma ||
           NodeTokens[I].Kind == tok::r_paren)
         break;
+      if (NodeTokens[I].Kind == tok::less) {
+        ++AngleDepth;
+        continue;
+      }
+      if (NodeTokens[I].Kind == tok::greater && AngleDepth > 0) {
+        --AngleDepth;
+        continue;
+      }
+      if (AngleDepth > 0)
+        continue;
+
       if (NodeTokens[I].Kind == tok::kw_auto ||
           NodeTokens[I].Kind == tok::kw_void ||
           NodeTokens[I].Kind == tok::kw_bool ||
@@ -980,17 +1338,38 @@ void buildScopes(const pseudo::ForestNode *N, pseudo::Token::Index End,
         HasExplicitType = true;
       if (NodeTokens[I].Kind == tok::raw_identifier ||
           NodeTokens[I].Kind == tok::identifier) {
-        if (NameTok)
-          TypeTok = NameTok;
+        if (I > 0 && NodeTokens[I - 1].Kind == tok::coloncolon)
+          continue;
+        if (I + 1 < NodeTokens.size() &&
+            (NodeTokens[I + 1].Kind == tok::coloncolon ||
+             NodeTokens[I + 1].Kind == tok::less ||
+             NodeTokens[I + 1].Kind == tok::star ||
+             NodeTokens[I + 1].Kind == tok::amp ||
+             NodeTokens[I + 1].Kind == tok::ampamp))
+          continue;
         NameTok = &NodeTokens[I];
+        NameTokIdx = I;
       }
     }
-    bool HasTypeName = (TypeTok != nullptr) || HasExplicitType;
-    if (NameTok && HasTypeName) {
+    bool HasPrecedingType = (NameTok && NameTokIdx > 0) || HasExplicitType;
+    if (NameTok && HasPrecedingType) {
+      size_t TStart = tokenStartOffset(NodeTokens[0], Out);
+      size_t TEnd = tokenStartOffset(*NameTok, Out);
+      std::string ParamType;
+      if (TStart < TEnd && TEnd <= Code.size())
+        ParamType = Code.slice(TStart, TEnd).trim().str();
+      if (ParamType.empty() && HasExplicitType) {
+        for (size_t I = 0; I < NameTokIdx && I < NodeTokens.size(); ++I) {
+          if (NodeTokens[I].Kind != tok::comment) {
+            ParamType = getOrigToken(NodeTokens[I], Out).text().str();
+            break;
+          }
+        }
+      }
+
       LocalDecl LD;
       LD.Name = getOrigToken(*NameTok, Out).text().str();
-      if (TypeTok)
-        LD.TypeName = getOrigToken(*TypeTok, Out).text().str();
+      LD.TypeName = ParamType;
       LD.NameRange = tokenRange(*NameTok, Out, Code);
       LD.DeclRange = nodeRange(StartTok, EndTok, Out, Code);
       LD.DeclOffset = tokenStartOffset(*NameTok, Out);
@@ -1870,6 +2249,8 @@ PseudoModule::getHeaderInfo(llvm::StringRef HeaderPath,
 
   for (const auto &Scope : Scopes) {
     for (const auto &D : Scope.Decls) {
+      if (D.Kind == PseudoModule::DeclKind::Parameter || D.IsParameter)
+        continue;
       HeaderDecl HD;
       HD.Name = D.Name;
       HD.NameRange = D.NameRange;
@@ -2095,6 +2476,36 @@ static bool isTypeContext(const pseudo::Token *Touched, const ParseOutput &Out) 
   }
   if (InTemplateArgs)
     return true;
+
+  // 6. Parameter list type, e.g. [](llvm::StringRef) or void foo(llvm::StringRef)
+  if (Next && (Next->Kind == tok::r_paren || Next->Kind == tok::comma)) {
+    int ParenDepth = 1;
+    for (size_t I = Idx; I > 0; --I) {
+      const auto &T = Out.RawStream.tokens()[I - 1];
+      if (T.Kind == tok::semi || T.Kind == tok::l_brace || T.Kind == tok::r_brace)
+        break;
+      if (T.Kind == tok::r_paren)
+        ++ParenDepth;
+      else if (T.Kind == tok::l_paren) {
+        --ParenDepth;
+        if (ParenDepth == 0) {
+          if (I >= 2) {
+            const auto &BeforeParen = Out.RawStream.tokens()[I - 2];
+            if (BeforeParen.Kind == tok::r_square ||
+                BeforeParen.Kind == tok::kw_void ||
+                BeforeParen.Kind == tok::kw_bool ||
+                BeforeParen.Kind == tok::kw_int ||
+                BeforeParen.Kind == tok::kw_char ||
+                BeforeParen.Kind == tok::kw_float ||
+                BeforeParen.Kind == tok::kw_double) {
+              return true;
+            }
+          }
+          break;
+        }
+      }
+    }
+  }
 
   return false;
 }
@@ -2499,8 +2910,10 @@ static const LocalDecl *resolveTargetDecl(
               CS.Name == LhsName) {
             for (const auto &D : CS.Decls) {
               if (D.Name == TargetName) {
-                TargetDecl = &D;
-                break;
+                if (!ExpectsType || PseudoModule::isTypeDecl(D.Kind)) {
+                  TargetDecl = &D;
+                  break;
+                }
               }
             }
           }
@@ -2511,6 +2924,10 @@ static const LocalDecl *resolveTargetDecl(
           for (const auto &S : Scopes) {
             for (const auto &D : S.Decls) {
               if (D.Name == TargetName && D.EnclosingClass == LhsName) {
+                if (D.Kind == PseudoModule::DeclKind::Parameter || D.IsParameter)
+                  continue;
+                if (ExpectsType && !PseudoModule::isTypeDecl(D.Kind))
+                  continue;
                 TargetDecl = &D;
                 break;
               }
@@ -2550,15 +2967,13 @@ static const LocalDecl *resolveTargetDecl(
       TargetDecl = findAnyDecl(TargetName, Scopes, ExpectsType);
   }
 
-  // If OpTok is set but member lookup failed (e.g., receiver type resolution
-  // failed due to incomplete code), fallback to findAnyDecl but only accept
-  // member declarations to avoid matching unrelated global names.
   if (!TargetDecl && OpTok &&
       (OpTok->Kind == tok::period || OpTok->Kind == tok::arrow)) {
-    const LocalDecl *Candidate = findAnyDecl(TargetName, Scopes, ExpectsType);
-    if (Candidate && Candidate->IsMember &&
-        (CleanRec.empty() || Candidate->EnclosingClass == CleanRec))
-      TargetDecl = Candidate;
+    if (!CleanRec.empty()) {
+      const LocalDecl *Candidate = findAnyDecl(TargetName, Scopes, ExpectsType);
+      if (Candidate && Candidate->IsMember && Candidate->EnclosingClass == CleanRec)
+        TargetDecl = Candidate;
+    }
   }
 
   return TargetDecl;
@@ -2795,25 +3210,81 @@ PseudoModule::locateSymbolAt(PathRef File, llvm::StringRef Code, Position Pos) {
         bool WordBefore = SearchPos == 0 ||
             (!llvm::isAlnum(Content[SearchPos - 1]) &&
              Content[SearchPos - 1] != '_');
+        if (!WordBefore) {
+          SearchPos += SymName.size();
+          continue;
+        }
+
+        // Must not be on a preprocessor line (#include, #define, etc.)
+        size_t LineStart = Content.rfind('\n', SearchPos);
+        LineStart = (LineStart == llvm::StringRef::npos) ? 0 : LineStart + 1;
+        llvm::StringRef LineBefore = Content.slice(LineStart, SearchPos).ltrim();
+        if (LineBefore.starts_with("#") || LineBefore.starts_with("//") ||
+            LineBefore.starts_with("/*") || LineBefore.starts_with("*")) {
+          SearchPos += SymName.size();
+          continue;
+        }
+
         size_t After = SearchPos + SymName.size();
         while (After < Content.size() && llvm::isSpace(Content[After]))
           ++After;
         bool ParenAfter =
             After < Content.size() && (Content[After] == '(' || Content[After] == '<');
-        if (WordBefore && (ParenAfter || After == Content.size() ||
-                           !llvm::isAlnum(Content[After]))) {
+        bool DeclAfter =
+            After < Content.size() &&
+            (Content[After] == ';' || Content[After] == '=' ||
+             Content[After] == ':' || Content[After] == '{' ||
+             Content[After] == ',');
+        if (ParenAfter || DeclAfter) {
           return Range{offsetToPosition(Content, SearchPos),
                        offsetToPosition(Content, SearchPos + SymName.size())};
         }
         SearchPos += SymName.size();
       }
-      size_t Pos = Content.find(SymName);
-      if (Pos != llvm::StringRef::npos) {
-        return Range{offsetToPosition(Content, Pos),
-                     offsetToPosition(Content, Pos + SymName.size())};
-      }
     }
     return TargetRange;
+  };
+
+  auto findStdFunction = [&](llvm::StringRef FnName) -> std::pair<std::string, Range> {
+    std::string UtilHeader = findUtilityHeader();
+    if (UtilHeader.empty())
+      return {"", Range{Position{0, 0}, Position{0, 0}}};
+
+    // 1. Check if defined in UtilHeader itself
+    Range R = findSymbolRangeInFile(UtilHeader, FnName);
+    if (R.start.line != 0 || R.start.character != 0 ||
+        R.end.line != 0 || R.end.character != 0) {
+      return {UtilHeader, R};
+    }
+
+    // 2. UtilHeader may delegate to subheaders like <bits/move.h> or <__utility/move.h>
+    if (auto Info = getHeaderInfo(UtilHeader, *FS)) {
+      std::string UtilDir = llvm::sys::path::parent_path(UtilHeader).str();
+      auto IncDirs = getIncludeDirectories(File);
+      for (const auto &Inc : Info->Includes) {
+        if (Inc.Written.find(FnName) != llvm::StringRef::npos) {
+          std::string SubH = resolveHeader(Inc, UtilDir, IncDirs, *FS);
+          if (!SubH.empty()) {
+            Range SubR = findSymbolRangeInFile(SubH, FnName);
+            if (SubR.start.line != 0 || SubR.start.character != 0 ||
+                SubR.end.line != 0 || SubR.end.character != 0) {
+              return {SubH, SubR};
+            }
+          }
+        }
+      }
+      for (const auto &Inc : Info->Includes) {
+        std::string SubH = resolveHeader(Inc, UtilDir, IncDirs, *FS);
+        if (!SubH.empty()) {
+          Range SubR = findSymbolRangeInFile(SubH, FnName);
+          if (SubR.start.line != 0 || SubR.start.character != 0 ||
+              SubR.end.line != 0 || SubR.end.character != 0) {
+            return {SubH, SubR};
+          }
+        }
+      }
+    }
+    return {"", Range{Position{0, 0}, Position{0, 0}}};
   };
 
   if (OpTok && (OpTok->Kind == tok::period || OpTok->Kind == tok::arrow)) {
@@ -2942,24 +3413,6 @@ PseudoModule::locateSymbolAt(PathRef File, llvm::StringRef Code, Position Pos) {
           /*MaxHeaders=*/100, /*MaxDepth=*/4);
     }
 
-    if (!Found) {
-      // Fallback: search for member TargetName in any included header class
-      traverseIncludedHeaders(
-          *this, File, Code, *FS,
-          [&](const HeaderInfo &Info, llvm::StringRef HeaderPath) {
-            for (const auto &D : Info.Decls) {
-              if (D.Name == TargetName && !D.EnclosingClass.empty()) {
-                BestDecl = D;
-                BestHeaderPath = HeaderPath.str();
-                Found = true;
-                return true;
-              }
-            }
-            return false;
-          },
-          /*MaxHeaders=*/100, /*MaxDepth=*/4);
-    }
-
     if (Found) {
       LocatedSymbol LS;
       LS.Name = BestDecl.Name;
@@ -2977,9 +3430,10 @@ PseudoModule::locateSymbolAt(PathRef File, llvm::StringRef Code, Position Pos) {
     // Check std::move or std::forward
     if ((LhsName == "std" && (TargetName == "move" || TargetName == "forward")) ||
         TargetName == "move" || TargetName == "forward") {
-      std::string UtilHeader = findUtilityHeader();
-      if (!UtilHeader.empty()) {
-        Range TargetRange = findSymbolRangeInFile(UtilHeader, TargetName);
+      auto [UtilHeader, TargetRange] = findStdFunction(TargetName);
+      if (!UtilHeader.empty() &&
+          (TargetRange.start.line != 0 || TargetRange.start.character != 0 ||
+           TargetRange.end.line != 0 || TargetRange.end.character != 0)) {
         LocatedSymbol LS;
         LS.Name = TargetName;
         LS.PreferredDeclaration = {
@@ -3007,6 +3461,9 @@ PseudoModule::locateSymbolAt(PathRef File, llvm::StringRef Code, Position Pos) {
     HeaderDecl BestDecl;
     std::string BestHeaderPath;
     bool Found = false;
+    HeaderDecl FallbackDecl;
+    std::string FallbackHeaderPath;
+    bool FallbackFound = false;
 
     traverseIncludedHeaders(
         *this, File, Code, *FS,
@@ -3022,17 +3479,25 @@ PseudoModule::locateSymbolAt(PathRef File, llvm::StringRef Code, Position Pos) {
           }
           for (const auto &D : Info.Decls) {
             if (D.Name == TargetName) {
+              if (ExpectsType && !PseudoModule::isTypeDecl(D.Kind))
+                continue;
               if (D.EnclosingClass == LhsName || D.EnclosingScope == LhsName ||
                   (!ResolvedLhs.empty() &&
                    (D.EnclosingClass == ResolvedLhs ||
                     D.EnclosingScope == ResolvedLhs)) ||
                   (llvm::StringRef(LhsName).ends_with("Registry") && D.EnclosingClass == "Registry") ||
-                  (!LhsName.empty() &&
+                  (!LhsName.empty() && !D.EnclosingClass.empty() &&
                    llvm::StringRef(LhsName).ends_with_insensitive(D.EnclosingClass))) {
-                BestDecl = D;
-                BestHeaderPath = HeaderPath.str();
-                Found = true;
-                return true;
+                if (D.IsDefinition) {
+                  BestDecl = D;
+                  BestHeaderPath = HeaderPath.str();
+                  Found = true;
+                  return true;
+                } else if (!FallbackFound) {
+                  FallbackDecl = D;
+                  FallbackHeaderPath = HeaderPath.str();
+                  FallbackFound = true;
+                }
               }
             }
           }
@@ -3040,23 +3505,10 @@ PseudoModule::locateSymbolAt(PathRef File, llvm::StringRef Code, Position Pos) {
         },
         /*MaxHeaders=*/100, /*MaxDepth=*/4);
 
-    if (!Found) {
-      // Fallback: look for TargetName in any class/scope
-      traverseIncludedHeaders(
-          *this, File, Code, *FS,
-          [&](const HeaderInfo &Info, llvm::StringRef HeaderPath) {
-            for (const auto &D : Info.Decls) {
-              if (D.Name == TargetName &&
-                  (!D.EnclosingClass.empty() || !D.EnclosingScope.empty())) {
-                BestDecl = D;
-                BestHeaderPath = HeaderPath.str();
-                Found = true;
-                return true;
-              }
-            }
-            return false;
-          },
-          /*MaxHeaders=*/100, /*MaxDepth=*/4);
+    if (!Found && FallbackFound) {
+      BestDecl = FallbackDecl;
+      BestHeaderPath = FallbackHeaderPath;
+      Found = true;
     }
 
     if (Found) {
@@ -3078,9 +3530,10 @@ PseudoModule::locateSymbolAt(PathRef File, llvm::StringRef Code, Position Pos) {
   bool FallbackFound = false;
 
   if (TargetName == "move" || TargetName == "forward") {
-    std::string UtilHeader = findUtilityHeader();
-    if (!UtilHeader.empty()) {
-      Range TargetRange = findSymbolRangeInFile(UtilHeader, TargetName);
+    auto [UtilHeader, TargetRange] = findStdFunction(TargetName);
+    if (!UtilHeader.empty() &&
+        (TargetRange.start.line != 0 || TargetRange.start.character != 0 ||
+         TargetRange.end.line != 0 || TargetRange.end.character != 0)) {
       LocatedSymbol LS;
       LS.Name = TargetName;
       LS.PreferredDeclaration = {
