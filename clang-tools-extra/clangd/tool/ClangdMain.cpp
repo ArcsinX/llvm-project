@@ -1082,13 +1082,13 @@ clangd accepts flags on the commandline, and in the CLANGD_FLAGS environment var
 
   FeatureModuleSet ModuleSet = FeatureModuleSet::fromRegistry();
   auto *Pseudo = ModuleSet.get<PseudoModule>();
-  if (!Pseudo) {
+  if (!Pseudo && UsePseudoParser) {
     auto Mod = std::make_unique<PseudoModule>();
     Pseudo = Mod.get();
     ModuleSet.add(std::move(Mod));
   }
   if (Pseudo) {
-    Pseudo->setEnabled(EnablePseudoParser);
+    Pseudo->setEnabled(UsePseudoParser);
     Pseudo->setPseudoOnly(UsePseudoParser);
   }
   if (ModuleSet.begin() != ModuleSet.end())

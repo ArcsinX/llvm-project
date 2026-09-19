@@ -102,6 +102,17 @@ add_clang_library(clangDaemon STATIC
   ProjectModules.cpp
   Protocol.cpp
   PseudoModule.cpp
+  pseudo/AST.cpp
+  pseudo/Completion.cpp
+  pseudo/Diagnostics.cpp
+  pseudo/Headers.cpp
+  pseudo/Highlight.cpp
+  pseudo/Hover.cpp
+  pseudo/Parse.cpp
+  pseudo/Scopes.cpp
+  pseudo/Symbols.cpp
+  pseudo/Types.cpp
+  pseudo/XRefs.cpp
   Quality.cpp
   ParsedAST.cpp
   Preamble.cpp
@@ -186,12 +197,13 @@ clang_target_link_libraries(clangDaemon
   )
 
 target_link_libraries(clangDaemon
+  PUBLIC
+  clangPseudo
+  clangPseudoCXX
   PRIVATE
   ${LLVM_PTHREAD_LIB}
 
   clangIncludeCleaner
-  clangPseudo
-  clangPseudoCXX
   clangTidy
   clangTidyUtils
 
