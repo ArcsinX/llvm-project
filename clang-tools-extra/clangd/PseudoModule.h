@@ -10,6 +10,7 @@
 #define LLVM_CLANG_TOOLS_EXTRA_CLANGD_PSEUDOMODULE_H
 
 #include "CodeComplete.h"
+#include "DraftStore.h"
 #include "FeatureModule.h"
 #include "GlobalCompilationDatabase.h"
 #include "LSPBinder.h"
@@ -61,8 +62,15 @@ public:
 
   bool blockASTBuild(llvm::StringRef File) const override { return PseudoOnly; }
 
-  void onDocumentUpdated(llvm::StringRef File, llvm::StringRef Contents,
-                         llvm::StringRef Version) override;
+  void onDocumentDidOpen(const DidOpenTextDocumentParams &Params);
+  void onDocumentDidChange(const DidChangeTextDocumentParams &Params);
+  void onDocumentDidClose(const DidCloseTextDocumentParams &Params);
+
+  void updateDraft(PathRef File, llvm::StringRef Contents,
+                   llvm::StringRef Version = "");
+  void removeDraft(PathRef File);
+  void publishDiagnosticsFor(PathRef File, llvm::StringRef Contents,
+                             llvm::StringRef Version = "");
 
   void setEnabled(bool E) { Enabled = E; }
   bool isEnabled() const { return Enabled; }
@@ -212,6 +220,7 @@ private:
   mutable std::mutex SemanticTokensMutex;
   llvm::StringMap<SemanticTokens> LastSemanticTokens;
 
+  DraftStore DraftMgr;
   LSPBinder::OutgoingNotification<PublishDiagnosticsParams> PublishDiagnostics;
 };
 
