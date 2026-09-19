@@ -276,8 +276,8 @@ ClangdServer::ClangdServer(const GlobalCompilationDatabase &CDB,
         *this->WorkScheduler,
         this->Index,
         this->TFS,
-        *this,
         &this->CDB,
+        &this->DraftMgr,
     };
     for (auto &Mod : *Opts.FeatureModules)
       Mod.initialize(F);
@@ -305,6 +305,8 @@ void ClangdServer::addDocument(PathRef File, llvm::StringRef Contents,
 
   std::string ActualVersion = DraftMgr.addDraft(File, Version, Contents);
   if (FeatureModules) {
+    for (auto &Mod : *FeatureModules)
+      Mod.onDocumentUpdated(File, Contents, ActualVersion);
     for (const auto &Mod : *FeatureModules) {
       if (Mod.blockASTBuild(File))
         return;

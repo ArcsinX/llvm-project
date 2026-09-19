@@ -1,4 +1,4 @@
-//===--- PseudoModule.h - Pseudo-parser fallback feature module ---*- C++ -*-===//
+//===--- PseudoModule.h - Pseudo-parser feature module -------------*- C++ -*-===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -12,9 +12,16 @@
 #include "CodeComplete.h"
 #include "FeatureModule.h"
 #include "GlobalCompilationDatabase.h"
+#include "LSPBinder.h"
 #include "Protocol.h"
 #include "SemanticHighlighting.h"
 #include "XRefs.h"
+#include "pseudo/AST.h"
+#include "pseudo/Diagnostics.h"
+#include "pseudo/Headers.h"
+#include "pseudo/Parse.h"
+#include "pseudo/Scopes.h"
+#include "pseudo/Types.h"
 #include "support/ThreadsafeFS.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/Support/Error.h"
@@ -33,12 +40,12 @@ extern volatile int PseudoModuleAnchorSource;
     PseudoModuleAnchorSource;
 
 /// Feature module that uses clang-pseudo (GLR C++ pseudo-parser) to provide
-/// syntax-based tooling features (such as document symbols, semantic selection,
-/// and folding ranges) without requiring valid compilation commands, headers, or
-/// complete types.
+/// language features (such as document symbols, go-to-definition, hover,
+/// completions, and diagnostics) without requiring valid compilation commands,
+/// headers, or complete types.
 ///
-/// This serves as an approximate / fallback parser when standard Clang AST
-/// cannot be built (e.g. missing/incorrect compilation flags, or severely broken code).
+/// When --use-pseudo-parser is enabled, clangd operates in pure pseudo-parser
+/// mode. When disabled, clangd uses the regular Clang AST-based parser.
 class PseudoModule final : public FeatureModule {
 public:
   PseudoModule();
@@ -53,6 +60,9 @@ public:
   std::unique_ptr<ASTListener> astListeners() override;
 
   bool blockASTBuild(llvm::StringRef File) const override { return PseudoOnly; }
+
+  void onDocumentUpdated(llvm::StringRef File, llvm::StringRef Contents,
+                         llvm::StringRef Version) override;
 
   void setEnabled(bool E) { Enabled = E; }
   bool isEnabled() const { return Enabled; }
@@ -109,6 +119,13 @@ public:
   getAST(PathRef File, llvm::StringRef Code,
          std::optional<Range> R = std::nullopt);
 
+  /// Parse C++ code using clang-pseudo and generate diagnostics.
+  llvm::Expected<std::vector<Diagnostic>>
+  getDiagnostics(PathRef File, llvm::StringRef Code);
+
+  llvm::Expected<std::vector<Diagnostic>>
+  getDiagnostics(llvm::StringRef Code);
+
   void onGoToDefinition(const TextDocumentPositionParams &Params,
                         Callback<std::vector<Location>> Reply);
   void onGoToDeclaration(const TextDocumentPositionParams &Params,
@@ -133,78 +150,46 @@ public:
                     Callback<CompletionList> Reply);
   void onAST(const ASTParams &Params, Callback<std::optional<ASTNode>> Reply);
 
-  struct IncludeDirective {
-    std::string Written;
-    bool IsAngled = false;
-    int HashLine = -1;
-  };
+  using IncludeDirective = clangd::IncludeDirective;
+  using DeclKind = clangd::DeclKind;
+  using HeaderDecl = clangd::HeaderDecl;
+  using HeaderInfo = clangd::HeaderInfo;
 
-  enum class DeclKind : uint8_t {
-    Unknown,
-    Variable,
-    Parameter,
-    Function,
-    Constructor,
-    Class,
-    Enum,
-    EnumValue,
-    TypeAlias,
-    Namespace,
-    TemplateParam,
-    Concept,
-  };
-
-  static inline bool isTypeDecl(DeclKind K) {
-    return K == DeclKind::Class || K == DeclKind::Enum ||
-           K == DeclKind::TypeAlias || K == DeclKind::TemplateParam ||
-           K == DeclKind::Namespace || K == DeclKind::Concept;
-  }
-
-  static inline bool isValueDecl(DeclKind K) {
-    return K == DeclKind::Variable || K == DeclKind::Parameter ||
-           K == DeclKind::EnumValue;
-  }
-
+  static inline bool isTypeDecl(DeclKind K) { return clangd::isTypeDecl(K); }
+  static inline bool isValueDecl(DeclKind K) { return clangd::isValueDecl(K); }
   static inline bool isFunctionDecl(DeclKind K) {
-    return K == DeclKind::Function || K == DeclKind::Constructor;
+    return clangd::isFunctionDecl(K);
   }
-
-  struct HeaderDecl {
-    std::string Name;
-    Range NameRange;
-    Range ScopeRange;
-    std::string EnclosingScope;
-    std::string EnclosingClass;
-    std::string TypeName;
-    DeclKind Kind = DeclKind::Unknown;
-    bool IsDefinition = false;
-  };
-
-  struct HeaderInfo {
-    std::string Path;
-    std::vector<HeaderDecl> Decls;
-    std::vector<IncludeDirective> Includes;
-  };
 
   void setCompilationDatabaseForTesting(const GlobalCompilationDatabase *CDB) {
     TestCDB = CDB;
   }
   void setFSForTesting(const ThreadsafeFS *FS) { TestFS = FS; }
 
-  std::vector<std::string> getIncludeDirectories(PathRef File) const;
-  static std::vector<IncludeDirective> extractIncludes(llvm::StringRef Code);
+  std::vector<std::string> getIncludeDirectories(PathRef File) const {
+    return clangd::getIncludeDirectories(File, getCDB());
+  }
+
+  static std::vector<IncludeDirective> extractIncludes(llvm::StringRef Code) {
+    return clangd::extractIncludes(Code);
+  }
+
   std::string resolveHeader(const IncludeDirective &Inc,
                             llvm::StringRef CurrentDir,
                             llvm::ArrayRef<std::string> IncludeDirs,
-                            llvm::vfs::FileSystem &FS) const;
+                            llvm::vfs::FileSystem &FS) const {
+    return clangd::resolveHeader(Inc, CurrentDir, IncludeDirs, FS);
+  }
 
   std::shared_ptr<const HeaderInfo>
-  getHeaderInfo(llvm::StringRef HeaderPath, llvm::vfs::FileSystem &FS);
+  getHeaderInfo(llvm::StringRef HeaderPath, llvm::vfs::FileSystem &FS) {
+    return clangd::getHeaderInfo(HeaderPath, FS, HeaderCache, HeaderCacheMutex);
+  }
 
-private:
   const GlobalCompilationDatabase *getCDB() const;
   llvm::IntrusiveRefCntPtr<llvm::vfs::FileSystem> getFS() const;
 
+private:
   void onCustomPseudoSymbols(const DocumentSymbolParams &Params,
                              Callback<std::vector<DocumentSymbol>> Reply);
 
@@ -226,6 +211,8 @@ private:
   llvm::StringMap<std::shared_ptr<const HeaderInfo>> HeaderCache;
   mutable std::mutex SemanticTokensMutex;
   llvm::StringMap<SemanticTokens> LastSemanticTokens;
+
+  LSPBinder::OutgoingNotification<PublishDiagnosticsParams> PublishDiagnostics;
 };
 
 } // namespace clangd

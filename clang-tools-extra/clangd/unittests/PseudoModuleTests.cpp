@@ -3753,6 +3753,121 @@ TEST(PseudoModuleTest, RangeForAutoTypeResolutionGTD) {
   }
 }
 
+TEST(PseudoModuleTest, DiagnosticsCleanCode) {
+  PseudoModule Mod;
+  llvm::StringRef Code = R"cpp(
+    int add(int a, int b) {
+      return a + b;
+    }
+    class Calculator {
+    public:
+      int multiply(int x, int y) {
+        return x * y;
+      }
+    };
+  )cpp";
+
+  auto Diags = Mod.getDiagnostics(Code);
+  ASSERT_TRUE(bool(Diags)) << llvm::toString(Diags.takeError());
+  EXPECT_TRUE(Diags->empty()) << "Clean code should produce no diagnostics, got: "
+                              << Diags->size();
+}
+
+TEST(PseudoModuleTest, DiagnosticsMissingBrace) {
+  PseudoModule Mod;
+  Annotations Code(R"cpp(
+    void broken() $[[{]]
+      int x = 10;
+  )cpp");
+
+  auto Diags = Mod.getDiagnostics(Code.code());
+  ASSERT_TRUE(bool(Diags)) << llvm::toString(Diags.takeError());
+  ASSERT_FALSE(Diags->empty());
+  bool FoundMissingBrace = false;
+  for (const auto &D : *Diags) {
+    if (D.code == "missing-brace") {
+      FoundMissingBrace = true;
+      EXPECT_EQ(D.severity, 1); // Error
+      EXPECT_EQ(D.source, "pseudo-parser");
+      EXPECT_EQ(D.range, Code.range());
+    }
+  }
+  EXPECT_TRUE(FoundMissingBrace);
+}
+
+TEST(PseudoModuleTest, DiagnosticsUnmatchedClosingBrace) {
+  PseudoModule Mod;
+  Annotations Code(R"cpp(
+    void func() {
+      int x = 1;
+    }
+    $[[}]]
+  )cpp");
+
+  auto Diags = Mod.getDiagnostics(Code.code());
+  ASSERT_TRUE(bool(Diags)) << llvm::toString(Diags.takeError());
+  ASSERT_FALSE(Diags->empty());
+  bool FoundUnmatchedBrace = false;
+  for (const auto &D : *Diags) {
+    if (D.code == "unmatched-brace") {
+      FoundUnmatchedBrace = true;
+      EXPECT_EQ(D.severity, 1); // Error
+      EXPECT_EQ(D.source, "pseudo-parser");
+      EXPECT_EQ(D.range, Code.range());
+    }
+  }
+  EXPECT_TRUE(FoundUnmatchedBrace);
+}
+
+TEST(PseudoModuleTest, DiagnosticsMissingParenAndBracket) {
+  PseudoModule Mod;
+  Annotations Code(R"cpp(
+    void test() {
+      int arr$bracket[[[]]10;
+      if $paren[[(]]true {
+      }
+    }
+  )cpp");
+
+  auto Diags = Mod.getDiagnostics(Code.code());
+  ASSERT_TRUE(bool(Diags)) << llvm::toString(Diags.takeError());
+  ASSERT_FALSE(Diags->empty());
+  bool FoundMissingBracket = false;
+  bool FoundMissingParen = false;
+  for (const auto &D : *Diags) {
+    if (D.code == "missing-bracket") {
+      FoundMissingBracket = true;
+      EXPECT_EQ(D.severity, 1);
+      EXPECT_EQ(D.range, Code.range("bracket"));
+    }
+    if (D.code == "missing-paren") {
+      FoundMissingParen = true;
+      EXPECT_EQ(D.severity, 1);
+      EXPECT_EQ(D.range, Code.range("paren"));
+    }
+  }
+  EXPECT_TRUE(FoundMissingBracket);
+  EXPECT_TRUE(FoundMissingParen);
+}
+
+TEST(PseudoModuleTest, DiagnosticsGrammarError) {
+  PseudoModule Mod;
+  llvm::StringRef Code = "class { invalid c++ syntax here @@@@ ;;; };";
+
+  auto Diags = Mod.getDiagnostics(Code);
+  ASSERT_TRUE(bool(Diags)) << llvm::toString(Diags.takeError());
+  EXPECT_FALSE(Diags->empty());
+  bool FoundGrammarOrSyntaxError = false;
+  for (const auto &D : *Diags) {
+    if (D.code == "grammar-error" || D.code == "syntax-error") {
+      FoundGrammarOrSyntaxError = true;
+      EXPECT_EQ(D.severity, 1);
+      EXPECT_EQ(D.source, "pseudo-parser");
+    }
+  }
+  EXPECT_TRUE(FoundGrammarOrSyntaxError);
+}
+
 } // namespace
 } // namespace clangd
 } // namespace clang
