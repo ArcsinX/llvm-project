@@ -25,7 +25,6 @@ namespace clang {
 class CompilerInstance;
 namespace clangd {
 struct Diag;
-class DraftStore;
 class LSPBinder;
 class SymbolIndex;
 class ThreadsafeFS;
@@ -84,7 +83,6 @@ public:
     const SymbolIndex *Index;
     const ThreadsafeFS &FS;
     const GlobalCompilationDatabase *CDB = nullptr;
-    const DraftStore *Drafts = nullptr;
   };
   /// Called by the server to prepare this module for use.
   void initialize(const Facilities &F);
@@ -131,10 +129,6 @@ public:
   /// Allows a module to suppress building the Clang AST for an opened file.
   virtual bool blockASTBuild(llvm::StringRef File) const { return false; }
 
-  /// Called when an open document is added or updated with new contents.
-  virtual void onDocumentUpdated(llvm::StringRef File, llvm::StringRef Contents,
-                                 llvm::StringRef Version) {}
-
 protected:
   /// Accessors for modules to access shared server facilities they depend on.
   bool hasFacilities() const { return Fac.has_value(); }
@@ -145,8 +139,6 @@ protected:
   const SymbolIndex *index() { return facilities().Index; }
   /// The filesystem is used to read source files on disk.
   const ThreadsafeFS &fs() { return facilities().FS; }
-  /// In-memory document drafts.
-  const DraftStore *drafts() { return facilities().Drafts; }
   /// The compilation database to obtain compilation commands.
   const GlobalCompilationDatabase *cdb() { return facilities().CDB; }
 

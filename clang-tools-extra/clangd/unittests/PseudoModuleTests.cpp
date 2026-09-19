@@ -3868,6 +3868,44 @@ TEST(PseudoModuleTest, DiagnosticsGrammarError) {
   EXPECT_TRUE(FoundGrammarOrSyntaxError);
 }
 
+TEST(PseudoModuleTest, DocumentDraftLifecycleAndDiagnostics) {
+  PseudoModule Mod;
+  Mod.setPseudoOnly(true);
+
+  std::string File = testPath("draft_test.cpp");
+
+  // 1. Initially no draft -> getDocument returns empty
+  EXPECT_EQ(Mod.getDocument(File), "");
+
+  // 2. onDocumentDidOpen
+  DidOpenTextDocumentParams OpenParams;
+  OpenParams.textDocument.uri = URIForFile::canonicalize(File, File);
+  OpenParams.textDocument.version = 1;
+  OpenParams.textDocument.text = "int a = 1;";
+  Mod.onDocumentDidOpen(OpenParams);
+
+  EXPECT_EQ(Mod.getDocument(File), "int a = 1;");
+
+  // 3. onDocumentDidChange (incremental change)
+  DidChangeTextDocumentParams ChangeParams;
+  ChangeParams.textDocument.uri = URIForFile::canonicalize(File, File);
+  ChangeParams.textDocument.version = 2;
+  TextDocumentContentChangeEvent Change;
+  Change.range = Range{Position{0, 8}, Position{0, 9}}; // replace '1' with '42'
+  Change.text = "42";
+  ChangeParams.contentChanges.push_back(Change);
+  Mod.onDocumentDidChange(ChangeParams);
+
+  EXPECT_EQ(Mod.getDocument(File), "int a = 42;");
+
+  // 4. onDocumentDidClose
+  DidCloseTextDocumentParams CloseParams;
+  CloseParams.textDocument.uri = URIForFile::canonicalize(File, File);
+  Mod.onDocumentDidClose(CloseParams);
+
+  EXPECT_EQ(Mod.getDocument(File), "");
+}
+
 } // namespace
 } // namespace clangd
 } // namespace clang

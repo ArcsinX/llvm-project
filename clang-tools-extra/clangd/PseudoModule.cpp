@@ -147,10 +147,8 @@ llvm::IntrusiveRefCntPtr<llvm::vfs::FileSystem> PseudoModule::getFS() const {
 }
 
 std::string PseudoModule::getDocument(PathRef File) {
-  if (hasFacilities() && drafts()) {
-    if (auto Draft = drafts()->getDraft(File))
-      return *Draft->Contents;
-  }
+  if (auto Draft = DraftMgr.getDraft(File))
+    return *Draft->Contents;
   if (auto FS = getFS()) {
     if (auto Buf = FS->getBufferForFile(File))
       return (*Buf)->getBuffer().str();
@@ -179,9 +177,22 @@ PseudoModule::getAST(PathRef File, llvm::StringRef Code,
   return clangd::getAST(File, Code, R);
 }
 
-void PseudoModule::onDocumentUpdated(llvm::StringRef File, llvm::StringRef Contents,
-                                     llvm::StringRef Version) {
-  if (!isPseudoOnly() || !PublishDiagnostics)
+static std::string encodeVersion(std::optional<int64_t> LSPVersion) {
+  return LSPVersion ? std::to_string(*LSPVersion) : "";
+}
+
+void PseudoModule::updateDraft(PathRef File, llvm::StringRef Contents,
+                               llvm::StringRef Version) {
+  DraftMgr.addDraft(File, Version, Contents);
+}
+
+void PseudoModule::removeDraft(PathRef File) {
+  DraftMgr.removeDraft(File);
+}
+
+void PseudoModule::publishDiagnosticsFor(PathRef File, llvm::StringRef Contents,
+                                         llvm::StringRef Version) {
+  if (!PublishDiagnostics)
     return;
   auto Diags = getDiagnostics(File, Contents);
   if (!Diags) {
@@ -197,6 +208,47 @@ void PseudoModule::onDocumentUpdated(llvm::StringRef File, llvm::StringRef Conte
       Notification.version = V;
   }
   PublishDiagnostics(Notification);
+}
+
+void PseudoModule::onDocumentDidOpen(const DidOpenTextDocumentParams &Params) {
+  PathRef File = Params.textDocument.uri.file();
+  const std::string &Contents = Params.textDocument.text;
+  std::string Version = encodeVersion(Params.textDocument.version);
+  DraftMgr.addDraft(File, Version, Contents);
+  publishDiagnosticsFor(File, Contents, Version);
+}
+
+void PseudoModule::onDocumentDidChange(
+    const DidChangeTextDocumentParams &Params) {
+  PathRef File = Params.textDocument.uri.file();
+  auto Draft = DraftMgr.getDraft(File);
+  if (!Draft) {
+    log("Trying to incrementally change non-added document: {0}", File);
+    return;
+  }
+  std::string NewCode = *Draft->Contents;
+  for (const auto &Change : Params.contentChanges) {
+    if (auto Err = applyChange(NewCode, Change)) {
+      DraftMgr.removeDraft(File);
+      elog("Failed to update {0}: {1}", File, std::move(Err));
+      return;
+    }
+  }
+  std::string Version = encodeVersion(Params.textDocument.version);
+  DraftMgr.addDraft(File, Version, NewCode);
+  publishDiagnosticsFor(File, NewCode, Version);
+}
+
+void PseudoModule::onDocumentDidClose(
+    const DidCloseTextDocumentParams &Params) {
+  PathRef File = Params.textDocument.uri.file();
+  DraftMgr.removeDraft(File);
+  if (PublishDiagnostics) {
+    PublishDiagnosticsParams Notification;
+    Notification.uri = Params.textDocument.uri;
+    Notification.diagnostics = {};
+    PublishDiagnostics(Notification);
+  }
 }
 
 void PseudoModule::initializeLSP(LSPBinder &Bind,
@@ -225,6 +277,13 @@ void PseudoModule::initializeLSP(LSPBinder &Bind,
 
   PublishDiagnostics =
       Bind.outgoingNotification("textDocument/publishDiagnostics");
+
+  Bind.notification("textDocument/didOpen", this,
+                    &PseudoModule::onDocumentDidOpen);
+  Bind.notification("textDocument/didChange", this,
+                    &PseudoModule::onDocumentDidChange);
+  Bind.notification("textDocument/didClose", this,
+                    &PseudoModule::onDocumentDidClose);
 
   Bind.method("textDocument/definition", this,
               &PseudoModule::onGoToDefinition);
