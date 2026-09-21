@@ -7,6 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "ClangdMain.h"
+#include "ClangTidyFeatureModule.h"
 #include "ClangdLSPServer.h"
 #include "CodeComplete.h"
 #include "Compiler.h"
@@ -1019,7 +1020,6 @@ clangd accepts flags on the commandline, and in the CLANGD_FLAGS environment var
     Providers.push_back(provideDefaultChecks());
     Providers.push_back(disableUnusableChecks());
     ClangTidyOptProvider = combine(std::move(Providers));
-    Opts.ClangTidyProvider = ClangTidyOptProvider;
   }
   Opts.UseDirtyHeaders = UseDirtyHeaders;
   Opts.PreambleParseForwardingFunctions = PreambleParseForwardingFunctions;
@@ -1037,6 +1037,10 @@ clangd accepts flags on the commandline, and in the CLANGD_FLAGS environment var
     Opts.Encoding = ForceOffsetEncoding;
 
   FeatureModuleSet ModuleSet = FeatureModuleSet::fromRegistry();
+  // Check mode needs the module for timing even when tidy is disabled.
+  if (EnableClangTidy || CheckFile.getNumOccurrences())
+    ModuleSet.add(std::make_unique<ClangTidyFeatureModule>(
+        std::move(ClangTidyOptProvider)));
   if (ModuleSet.begin() != ModuleSet.end())
     Opts.FeatureModules = &ModuleSet;
 
