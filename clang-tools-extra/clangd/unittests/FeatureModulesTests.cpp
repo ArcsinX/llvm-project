@@ -7,15 +7,21 @@
 //===----------------------------------------------------------------------===//
 
 #include "Annotations.h"
+#include "ClangTidyFeatureModule.h"
+#include "Compiler.h"
+#include "Feature.h"
 #include "FeatureModule.h"
 #include "Selection.h"
+#include "TestFS.h"
 #include "TestTU.h"
 #include "refactor/Tweak.h"
 #include "support/Logger.h"
 #include "clang/AST/Decl.h"
 #include "clang/Basic/DiagnosticFrontend.h"
+#include "clang/Basic/DiagnosticLex.h"
 #include "clang/Frontend/CompilerInstance.h"
 #include "clang/Frontend/FrontendOptions.h"
+#include "clang/Frontend/MultiplexConsumer.h"
 #include "clang/Lex/PPCallbacks.h"
 #include "clang/Lex/Preprocessor.h"
 #include "llvm/Support/Error.h"
@@ -301,6 +307,135 @@ TEST(FeatureModulesTest, FinalizeDiagnostic) {
   EXPECT_THAT(TU.build().getDiagnostics(), testing::SizeIs(1));
   EXPECT_EQ(Notes, 1u);
   EXPECT_EQ(Fixes, 1u);
+}
+
+TEST(FeatureModulesTest, ClangTidyWarningOptionsBeforeBeginSourceFile) {
+  auto Build = [](bool Suppress, bool ExtraArgsBefore) {
+    unsigned Warnings = 0;
+    auto Observer = std::make_unique<TestModule>();
+    Observer->SawDiagnostic = [&](const clang::Diagnostic &Info,
+                                  clangd::Diag &) {
+      if (Info.getID() == diag::warn_mmap_umbrella_dir_not_found)
+        ++Warnings;
+    };
+    FeatureModuleSet Modules;
+    Modules.add(std::move(Observer));
+    Modules.add(std::make_unique<ClangTidyFeatureModule>(
+        [=](tidy::ClangTidyOptions &Opts, llvm::StringRef) {
+          Opts.Checks = "-*";
+          if (Suppress) {
+            auto &Args =
+                ExtraArgsBefore ? Opts.ExtraArgsBefore : Opts.ExtraArgs;
+            Args = {"-Wno-incomplete-umbrella"};
+          }
+        }));
+    auto TU = TestTU::withCode("int value;");
+    TU.FeatureModules = &Modules;
+    TU.ExtraArgs = {"-fmodules",
+                    "-fmodule-map-file=" + testPath("module.modulemap")};
+    TU.AdditionalFiles["module.modulemap"] =
+        R"(module M { umbrella "missing" })";
+
+    // Observe module-map warnings from BeginSourceFile directly: StoreDiags
+    // may drop them because they are outside the main file. Don't build a PCH.
+    MockFS FS;
+    auto Inputs = TU.inputs(FS);
+    IgnoreDiagnostics Diags;
+    auto CI = buildCompilerInvocation(Inputs, Diags);
+    ASSERT_TRUE(CI);
+    ASSERT_TRUE(ParsedAST::build(testPath(TU.Filename), Inputs, std::move(CI),
+                                 {}, nullptr));
+    EXPECT_EQ(Warnings, Suppress ? 0u : 1u);
+  };
+  Build(false, false);
+  Build(true, false);
+  Build(true, true);
+}
+
+TEST(FeatureModulesTest, ClangTidyRelativeInput) {
+  if (!CLANGD_TIDY_CHECKS)
+    GTEST_SKIP() << "Requires clang-tidy checks";
+  MockFS FS;
+  auto TU = TestTU::withCode("int *p = 0;");
+  TU.Filename = "project/src/test.cpp";
+  TU.AdditionalFiles["project/src/.clang-tidy"] =
+      "Checks: '-*,modernize-use-nullptr'";
+  auto Provider = provideClangTidyFiles(FS);
+  FeatureModuleSet Modules;
+  Modules.add(std::make_unique<ClangTidyFeatureModule>(
+      [&](tidy::ClangTidyOptions &Opts, llvm::StringRef Filename) {
+        EXPECT_EQ(Filename, testPath(TU.Filename));
+        Provider(Opts, Filename);
+      }));
+  TU.FeatureModules = &Modules;
+  auto Inputs = TU.inputs(FS);
+  Inputs.CompileCommand.Directory = testPath("project");
+  // Configuration lookup must use the requested file, not the frontend input.
+  for (auto InputFile : {"src/./test.cpp", "../other/test.cpp"}) {
+    SCOPED_TRACE(InputFile);
+    IgnoreDiagnostics Diags;
+    auto CI = buildCompilerInvocation(Inputs, Diags);
+    ASSERT_TRUE(CI);
+    auto Kind = CI->getFrontendOpts().Inputs.front().getKind();
+    CI->getFrontendOpts().Inputs = {FrontendInputFile(InputFile, Kind)};
+    auto AST = ParsedAST::build(testPath(TU.Filename), Inputs, std::move(CI),
+                                {}, nullptr);
+    ASSERT_TRUE(AST);
+    ASSERT_THAT(AST->getDiagnostics(), testing::SizeIs(1));
+    EXPECT_EQ(AST->getDiagnostics().front().Name, "modernize-use-nullptr");
+  }
+}
+
+TEST(FeatureModulesTest, ClangTidyTemporaryProvider) {
+  if (!CLANGD_TIDY_CHECKS)
+    GTEST_SKIP() << "Requires clang-tidy checks";
+  FeatureModuleSet Modules;
+  Modules.add(std::make_unique<ClangTidyFeatureModule>(
+      addTidyChecks("modernize-use-nullptr")));
+  auto TU = TestTU::withCode("int *p = 0;");
+  TU.FeatureModules = &Modules;
+  auto *Tidy = Modules.get<ClangTidyFeatureModule>();
+  auto Provider = std::make_shared<const TidyProvider>(addTidyChecks("-*"));
+  // Check-mode timing temporarily overrides tidy's configuration, then
+  // restores the original provider for subsequent builds.
+  Tidy->swapProvider(Provider);
+  EXPECT_THAT(TU.build().getDiagnostics(), testing::IsEmpty());
+  Tidy->swapProvider(Provider);
+  auto AST = TU.build();
+  ASSERT_THAT(AST.getDiagnostics(), testing::SizeIs(1));
+  EXPECT_EQ(AST.getDiagnostics().front().Name, "modernize-use-nullptr");
+}
+
+TEST(FeatureModulesTest, ClangTidyDoesNotReinitializeConsumer) {
+  if (!CLANGD_TIDY_CHECKS)
+    GTEST_SKIP() << "Requires clang-tidy checks";
+  class InitializationGuard final : public MultiplexConsumer {
+  public:
+    using MultiplexConsumer::MultiplexConsumer;
+    void Initialize(ASTContext &Ctx) override {
+      EXPECT_FALSE(Initialized);
+      Initialized = true;
+      MultiplexConsumer::Initialize(Ctx);
+    }
+
+  private:
+    bool Initialized = false;
+  };
+  auto Module = std::make_unique<TestModule>();
+  Module->BeforePPCallbacks = [](CompilerInstance &CI) {
+    if (CI.getFrontendOpts().ProgramAction == frontend::ParseSyntaxOnly)
+      CI.setASTConsumer(
+          std::make_unique<InitializationGuard>(CI.takeASTConsumer()));
+  };
+  FeatureModuleSet Modules;
+  Modules.add(std::move(Module));
+  auto TU = TestTU::withCode("int *p = 0;");
+  TU.FeatureModules = &Modules;
+  Modules.add(std::make_unique<ClangTidyFeatureModule>(
+      addTidyChecks("modernize-use-nullptr")));
+  // Installing tidy's multiplexer must not initialize the existing consumer
+  // again after setASTConsumer() has already initialized it above.
+  EXPECT_THAT(TU.build().getDiagnostics(), testing::SizeIs(1));
 }
 
 } // namespace

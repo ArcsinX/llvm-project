@@ -142,6 +142,8 @@ public:
     /// Called everytime a diagnostic is encountered. Modules can use this
     /// modify the final diagnostic, or store some information to surface code
     /// actions later on.
+    /// Retained errors without source locations are also reported, with an
+    /// empty File and a zero-length Range at (0, 0).
     virtual void sawDiagnostic(const clang::Diagnostic &, clangd::Diag &) {}
 
     /// Called after a diagnostic is fully assembled, including notes and

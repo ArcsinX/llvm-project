@@ -6,6 +6,8 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "../clang-tidy/ClangTidyCheck.h"
+#include "../clang-tidy/ClangTidyModule.h"
 #include "../clang-tidy/ClangTidyOptions.h"
 #include "Annotations.h"
 #include "Config.h"
@@ -27,6 +29,7 @@
 #include "support/Context.h"
 #include "support/Path.h"
 #include "clang/AST/Decl.h"
+#include "clang/ASTMatchers/ASTMatchers.h"
 #include "clang/Basic/Diagnostic.h"
 #include "clang/Basic/DiagnosticSema.h"
 #include "clang/Basic/LLVM.h"
@@ -63,6 +66,34 @@ using ::testing::Not;
 using ::testing::Pair;
 using ::testing::SizeIs;
 using ::testing::UnorderedElementsAre;
+
+class LocationlessErrorCheck : public tidy::ClangTidyCheck {
+public:
+  LocationlessErrorCheck(llvm::StringRef Name, tidy::ClangTidyContext *Context)
+      : ClangTidyCheck(Name, Context) {
+    if (Options.get("EmitError", false))
+      configurationDiag("invalid test option", DiagnosticIDs::Error);
+  }
+
+  void registerMatchers(ast_matchers::MatchFinder *Finder) override {
+    if (Options.get("EmitAfterParsing", false))
+      Finder->addMatcher(ast_matchers::translationUnitDecl(), this);
+  }
+
+  void onEndOfTranslationUnit() override {
+    configurationDiag("invalid test option", DiagnosticIDs::Error);
+  }
+};
+
+class LocationlessErrorModule : public tidy::ClangTidyModule {
+public:
+  void addCheckFactories(tidy::ClangTidyCheckFactories &Factories) override {
+    Factories.registerCheck<LocationlessErrorCheck>("test-locationless-error");
+  }
+};
+static tidy::ClangTidyModuleRegistry::Add<LocationlessErrorModule>
+    LocationlessErrorRegistration("test-locationless-error-module",
+                                  "Test location-less tidy errors");
 
 ::testing::Matcher<const Diag &> withFix(::testing::Matcher<Fix> FixMatcher) {
   return Field(&Diag::Fixes, ElementsAre(FixMatcher));
@@ -822,6 +853,55 @@ TEST(DiagnosticTest, ClangTidyEnablesClangWarning) {
   TU.ExtraArgs = {"-Wno-unused"};
   TU.ClangTidyProvider = addClangArgs({"-Wunused"}, {"-*, clang-diagnostic-*"});
   EXPECT_THAT(TU.build().getDiagnostics(), SizeIs(1));
+}
+
+TEST(DiagnosticTest, ClangTidyCompilerWarningsWithoutChecks) {
+  auto TU = TestTU::withCode("static void foo() {}\n");
+  TU.ClangTidyProvider = [](tidy::ClangTidyOptions &Opts, llvm::StringRef) {
+    Opts.Checks = "-*,clang-diagnostic-*";
+    Opts.ExtraArgs = {"-Wunused-function"};
+    Opts.WarningsAsErrors = "clang-diagnostic-unused-function";
+  };
+  auto Warning = AllOf(diagName("-Wunused-function"), diagSource(Diag::Clang),
+                       diagSeverity(DiagnosticsEngine::Warning));
+  EXPECT_THAT(TU.build().getDiagnostics(), ElementsAre(Warning));
+
+  // Without tidy checks, NOLINT and WarningsAsErrors don't affect warnings.
+  TU.Code =
+      "static void foo() {} // NOLINT(clang-diagnostic-unused-function)\n";
+  EXPECT_THAT(TU.build().getDiagnostics(), ElementsAre(Warning));
+}
+
+TEST(DiagnosticTest, ClangTidyLocationlessError) {
+  Config Cfg;
+  Cfg.Diagnostics.ClangTidy.FastCheckFilter = Config::FastCheckPolicy::None;
+  WithContextValue WithCfg(Config::Key, std::move(Cfg));
+  auto TU = TestTU::withCode("int foo; // error-ok\n");
+  auto Error = AllOf(diagName("clang-tidy-config"), diagSource(Diag::ClangTidy),
+                     diagSeverity(DiagnosticsEngine::Error),
+                     Field(&clangd::Diag::Message, "invalid test option"));
+  for (bool AfterParsing : {false, true}) {
+    SCOPED_TRACE(AfterParsing);
+    TU.ClangTidyProvider = [AfterParsing](tidy::ClangTidyOptions &Opts,
+                                          llvm::StringRef) {
+      Opts.Checks = "-*,test-locationless-error";
+      Opts.CheckOptions[AfterParsing
+                            ? "test-locationless-error.EmitAfterParsing"
+                            : "test-locationless-error.EmitError"] = "true";
+    };
+    EXPECT_THAT(TU.build().getDiagnostics(), ElementsAre(Error));
+
+    Config SuppressCfg;
+    SuppressCfg.Diagnostics.ClangTidy.FastCheckFilter =
+        Config::FastCheckPolicy::None;
+    SuppressCfg.Diagnostics.Suppress.insert("clang-tidy-config");
+    WithContextValue Suppress(Config::Key, std::move(SuppressCfg));
+    // Constructor errors precede suppression, as in the original integration.
+    if (AfterParsing)
+      EXPECT_THAT(TU.build().getDiagnostics(), IsEmpty());
+    else
+      EXPECT_THAT(TU.build().getDiagnostics(), ElementsAre(Error));
+  }
 }
 
 TEST(DiagnosticTest, LongFixMessages) {
