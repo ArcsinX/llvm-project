@@ -225,17 +225,27 @@ TEST_F(LSPTest, ClangTidyRename) {
   ASSERT_TRUE(Diags && !Diags->empty());
   auto RenameDiag = Diags->front();
 
-  auto RenameCommand =
-      (*Client
-            .call("textDocument/codeAction",
-                  llvm::json::Object{
-                      {"textDocument", Client.documentID("foo.cpp")},
-                      {"context",
-                       llvm::json::Object{
-                           {"diagnostics", llvm::json::Array{RenameDiag}}}},
-                      {"range", Source.range()}})
-            .takeValue()
-            .getAsArray())[0];
+  auto CodeActions =
+      *Client
+           .call("textDocument/codeAction",
+                 llvm::json::Object{
+                     {"textDocument", Client.documentID("foo.cpp")},
+                     {"context",
+                      llvm::json::Object{
+                          {"diagnostics", llvm::json::Array{RenameDiag}}}},
+                     {"range", Source.range()}})
+           .takeValue()
+           .getAsArray();
+
+  // Suppression actions are offered alongside the rename.
+  auto RenameIt =
+      llvm::find_if(CodeActions, [](const llvm::json::Value &Action) {
+        const auto *Object = Action.getAsObject();
+        return Object &&
+               Object->getString("title") == "Apply fix: change 'foo' to 'Foo'";
+      });
+  ASSERT_NE(RenameIt, CodeActions.end());
+  auto RenameCommand = *RenameIt;
 
   ASSERT_EQ((*RenameCommand.getAsObject())["title"],
             "Apply fix: change 'foo' to 'Foo'");
@@ -282,6 +292,53 @@ TEST_F(LSPTest, ClangTidyCrash_Issue109367) {
   Client.didOpen("a.cpp", "");
   Client.didOpen("b.cpp", "");
   Client.sync();
+}
+
+TEST_F(LSPTest, ClangTidySuppressionActions) {
+  if (!CLANGD_TIDY_CHECKS)
+    GTEST_SKIP() << "Requires clang-tidy checks";
+  Annotations Code("$before[[]]  int *p = $diag[[0]];$after[[]]\n");
+  FeatureModules.add(std::make_unique<ClangTidyFeatureModule>(
+      [](tidy::ClangTidyOptions &Opts, llvm::StringRef) {
+        Opts.Checks = "-*,modernize-use-nullptr";
+      }));
+  auto &Client = start();
+  Client.didOpen("foo.cpp", Code.code());
+  auto Diags = Client.diagnostics("foo.cpp");
+  ASSERT_TRUE(Diags);
+  ASSERT_EQ(Diags->size(), 1u);
+  auto Actions =
+      Client
+          .call("textDocument/codeAction",
+                llvm::json::Object{
+                    {"textDocument", Client.documentID("foo.cpp")},
+                    {"context", llvm::json::Object{{"diagnostics", *Diags}}},
+                    {"range", Code.range("diag")}})
+          .takeValue();
+  ASSERT_TRUE(Actions.getAsArray());
+  for (bool NextLine : {false, true}) {
+    std::string Kind = NextLine ? "NOLINTNEXTLINE" : "NOLINT";
+    auto It =
+        llvm::find_if(*Actions.getAsArray(), [&](const llvm::json::Value &V) {
+          const auto *Object = V.getAsObject();
+          return Object && Object->getString("title") ==
+                               "Apply fix: suppress this warning with " + Kind;
+        });
+    ASSERT_NE(It, Actions.getAsArray()->end()) << Kind;
+    const auto *Args = It->getAsObject()->getArray("arguments");
+    ASSERT_NE(Args, nullptr);
+    auto URI = Client.uri("foo.cpp").getAsString()->str();
+    llvm::json::Array Expected{llvm::json::Object{
+        {"changes",
+         llvm::json::Object{
+             {URI,
+              llvm::json::Array{llvm::json::Object{
+                  {"range", Code.range(NextLine ? "before" : "after")},
+                  {"newText",
+                   NextLine ? "  // NOLINTNEXTLINE(modernize-use-nullptr)\n"
+                            : " // NOLINT(modernize-use-nullptr)"}}}}}}}};
+    EXPECT_EQ(*Args, Expected);
+  }
 }
 
 TEST_F(LSPTest, IncomingCalls) {

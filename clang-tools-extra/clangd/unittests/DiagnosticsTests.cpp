@@ -68,6 +68,15 @@ using ::testing::UnorderedElementsAre;
   return Field(&Diag::Fixes, ElementsAre(FixMatcher));
 }
 
+::testing::Matcher<const Diag &>
+withTidyFix(::testing::Matcher<Fix> FixMatcher) {
+  return Field(
+      &Diag::Fixes,
+      ElementsAre(
+          FixMatcher, Field(&Fix::Message, "suppress this warning with NOLINT"),
+          Field(&Fix::Message, "suppress this warning with NOLINTNEXTLINE")));
+}
+
 ::testing::Matcher<const Diag &> withFix(::testing::Matcher<Fix> FixMatcher1,
                                          ::testing::Matcher<Fix> FixMatcher2) {
   return Field(&Diag::Fixes, UnorderedElementsAre(FixMatcher1, FixMatcher2));
@@ -338,8 +347,8 @@ TEST(DiagnosticsTest, ClangTidy) {
                      "using 'cassert' instead"),
                 diagSource(Diag::ClangTidy),
                 diagName("modernize-deprecated-headers"),
-                withFix(Fix(Test.range("deprecated"), "<cassert>",
-                            "change '\"assert.h\"' to '<cassert>'"))),
+                withTidyFix(Fix(Test.range("deprecated"), "<cassert>",
+                                "change '\"assert.h\"' to '<cassert>'"))),
           Diag(Test.range("doubled"),
                "suspicious usage of 'sizeof(sizeof(...))'"),
           AllOf(Diag(Test.range("macroarg"),
@@ -355,7 +364,7 @@ TEST(DiagnosticsTest, ClangTidy) {
                 diagSource(Diag::ClangTidy),
                 diagName("modernize-use-trailing-return-type"),
                 // Verify there's no "[check-name]" suffix in the message.
-                withFix(fixMessage(
+                withTidyFix(fixMessage(
                     "use a trailing return type for this function"))),
           Diag(Test.range("foo"),
                "function 'foo' is within a recursive call chain"),
@@ -425,7 +434,7 @@ TEST(DiagnosticsTest, ClangTidyRedundantParenthesesFix) {
           Diag(Test.range("lparen"), "redundant parentheses around expression"),
           diagSource(Diag::ClangTidy),
           diagName("readability-redundant-parentheses"),
-          withFix(equalToFix(ExpectedFix))))));
+          withTidyFix(equalToFix(ExpectedFix))))));
 }
 
 TEST(DiagnosticsTest, ClangTidyEOF) {
@@ -1014,14 +1023,14 @@ TEST(DiagnosticTest, ClangTidySelfContainedDiags) {
       ifTidyChecks(UnorderedElementsAre(
           AllOf(Diag(Main.range("A"), "'A' should be initialized in a member "
                                       "initializer of the constructor"),
-                withFix(equalToFix(ExpectedAFix))),
+                withTidyFix(equalToFix(ExpectedAFix))),
           AllOf(Diag(Main.range("B"), "'B' should be initialized in a member "
                                       "initializer of the constructor"),
-                withFix(equalToFix(ExpectedBFix))),
+                withTidyFix(equalToFix(ExpectedBFix))),
           AllOf(Diag(Main.range("C"), "variable 'C' is not initialized"),
-                withFix(equalToFix(ExpectedCFix))),
+                withTidyFix(equalToFix(ExpectedCFix))),
           AllOf(Diag(Main.range("D"), "variable 'D' is not initialized"),
-                withFix(equalToFix(ExpectedDFix))))));
+                withTidyFix(equalToFix(ExpectedDFix))))));
 }
 
 TEST(DiagnosticTest, ClangTidySelfContainedDiagsFormatting) {
@@ -1059,11 +1068,11 @@ TEST(DiagnosticTest, ClangTidySelfContainedDiagsFormatting) {
                   AllOf(Diag(Main.range("Reset1"),
                              "prefer using 'override' or (rarely) 'final' "
                              "instead of 'virtual'"),
-                        withFix(equalToFix(ExpectedFix1))),
+                        withTidyFix(equalToFix(ExpectedFix1))),
                   AllOf(Diag(Main.range("Reset2"),
                              "prefer using 'override' or (rarely) 'final' "
                              "instead of 'virtual'"),
-                        withFix(equalToFix(ExpectedFix2))))));
+                        withTidyFix(equalToFix(ExpectedFix2))))));
 }
 
 TEST(DiagnosticsTest, ClangTidyCallingIntoPreprocessor) {

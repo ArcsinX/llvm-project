@@ -11,7 +11,7 @@
 # CHECK-NEXT:        "codeDescription": {
 # CHECK-NEXT:          "href": "https://clang.llvm.org/extra/clang-tidy/checks/bugprone/sizeof-expression.html"
 # CHECK-NEXT:        },
-# CHECK-NEXT:        "message": "Suspicious usage of 'sizeof(K)'; did you mean 'K'?",
+# CHECK-NEXT:        "message": "Suspicious usage of 'sizeof(K)'; did you mean 'K'? (fixes available)",
 # CHECK-NEXT:        "range": {
 # CHECK-NEXT:          "end": {
 # CHECK-NEXT:            "character": 16,
@@ -30,6 +30,11 @@
 # CHECK-NEXT:    "version": 0
 # CHECK-NEXT:  }
 ---
+{"jsonrpc":"2.0","id":3,"method":"textDocument/codeAction","params":{"textDocument":{"uri":"test:///foo.c"},"range":{"start":{"line":1,"character":6},"end":{"line":1,"character":16}},"context":{"diagnostics":[{"range":{"start":{"line":1,"character":6},"end":{"line":1,"character":16}},"severity":2,"message":"Suspicious usage of 'sizeof(K)'; did you mean 'K'? (fixes available)","code":"bugprone-sizeof-expression","source":"clang-tidy"}]}}}
+# CHECK: "id": 3,
+# CHECK: "title": "Apply fix: suppress this warning with NOLINT"
+# CHECK: "title": "Apply fix: suppress this warning with NOLINTNEXTLINE"
+---
 {"jsonrpc":"2.0","id":2,"method":"sync","params":null}
 ---
 {"jsonrpc":"2.0","method":"textDocument/didClose","params":{"textDocument":{"uri":"test:///foo.c"}}}
@@ -42,4 +47,3 @@
 {"jsonrpc":"2.0","id":5,"method":"shutdown"}
 ---
 {"jsonrpc":"2.0","method":"exit"}
-

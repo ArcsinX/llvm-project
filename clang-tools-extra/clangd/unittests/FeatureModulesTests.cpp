@@ -12,6 +12,7 @@
 #include "Feature.h"
 #include "FeatureModule.h"
 #include "Selection.h"
+#include "SourceCode.h"
 #include "TestFS.h"
 #include "TestTU.h"
 #include "refactor/Tweak.h"
@@ -395,6 +396,75 @@ TEST(FeatureModulesTest, ClangTidyProviderLifetime) {
   EXPECT_FALSE(WeakState.expired());
   Listener.reset();
   EXPECT_TRUE(WeakState.expired());
+}
+
+TEST(FeatureModulesTest, ClangTidySuppressionFixes) {
+  if (!CLANGD_TIDY_CHECKS)
+    GTEST_SKIP() << "Requires clang-tidy checks";
+  const struct {
+    const char *Code;
+    const char *NextLineComment;
+  } Cases[] = {
+      {"$before[[]]int *p = 0;$after[[]]",
+       "// NOLINTNEXTLINE(modernize-use-nullptr)\n"},
+      {"$before[[]]  int *p = 0;$after[[]]\n",
+       "  // NOLINTNEXTLINE(modernize-use-nullptr)\n"},
+      {"$before[[]]\tint *p = 0;$after[[]]\r\n",
+       "\t// NOLINTNEXTLINE(modernize-use-nullptr)\r\n"},
+      {"$before[[]]/* 😀 */ int *p = 0; // comment$after[[]]\n",
+       "// NOLINTNEXTLINE(modernize-use-nullptr)\n"},
+      {"$before[[]]int *p = 0; // NOLINT(other-check)$after[[]]\n",
+       "// NOLINTNEXTLINE(modernize-use-nullptr)\n"},
+  };
+  for (const auto &Case : Cases) {
+    SCOPED_TRACE(Case.Code);
+    Annotations Code(Case.Code);
+    auto TU = TestTU::withCode(Code.code());
+    TU.ClangTidyProvider = addTidyChecks("modernize-use-nullptr");
+    auto AST = TU.build();
+    ASSERT_THAT(AST.getDiagnostics(), testing::SizeIs(1));
+    const auto &Fixes = AST.getDiagnostics().front().Fixes;
+    ASSERT_THAT(Fixes, testing::SizeIs(3));
+    // Keep the check's real fix first, with suppression as two alternatives.
+    EXPECT_EQ(Fixes[0].Edits.front().newText, "nullptr");
+    EXPECT_EQ(Fixes[1].Message, "suppress this warning with NOLINT");
+    EXPECT_EQ(Fixes[2].Message, "suppress this warning with NOLINTNEXTLINE");
+    ASSERT_THAT(Fixes[1].Edits, testing::SizeIs(1));
+    ASSERT_THAT(Fixes[2].Edits, testing::SizeIs(1));
+    EXPECT_EQ(Fixes[1].Edits.front().range, Code.range("after"));
+    EXPECT_EQ(Fixes[1].Edits.front().newText,
+              " // NOLINT(modernize-use-nullptr)");
+    EXPECT_EQ(Fixes[2].Edits.front().range, Code.range("before"));
+    EXPECT_EQ(Fixes[2].Edits.front().newText, Case.NextLineComment);
+    // Each alternative independently suppresses the diagnostic on a reparse.
+    for (unsigned I : {1u, 2u}) {
+      const auto &Edit = Fixes[I].Edits.front();
+      TU.Code = Code.code().str();
+      TU.Code.insert(
+          llvm::cantFail(positionToOffset(TU.Code, Edit.range.start)),
+          Edit.newText);
+      EXPECT_THAT(TU.build().getDiagnostics(), testing::IsEmpty());
+    }
+  }
+}
+
+TEST(FeatureModulesTest, ClangTidySuppressionWithoutCheckFix) {
+  if (!CLANGD_TIDY_CHECKS)
+    GTEST_SKIP() << "Requires clang-tidy checks";
+  auto TU = TestTU::withCode("int f() { return sizeof(42); }");
+  TU.ClangTidyProvider = addTidyChecks("bugprone-sizeof-expression");
+  auto AST = TU.build();
+  ASSERT_THAT(AST.getDiagnostics(), testing::SizeIs(1));
+  EXPECT_THAT(AST.getDiagnostics().front().Fixes, testing::SizeIs(2));
+}
+
+TEST(FeatureModulesTest, ClangTidyDoesNotAddCompilerSuppressionFixes) {
+  auto TU = TestTU::withCode("static void unused() {}");
+  TU.ExtraArgs = {"-Wunused-function"};
+  TU.ClangTidyProvider = addTidyChecks("modernize-use-nullptr");
+  auto AST = TU.build();
+  ASSERT_THAT(AST.getDiagnostics(), testing::SizeIs(1));
+  EXPECT_THAT(AST.getDiagnostics().front().Fixes, testing::IsEmpty());
 }
 
 TEST(FeatureModulesTest, ClangTidyDoesNotReinitializeConsumer) {

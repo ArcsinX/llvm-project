@@ -21,6 +21,7 @@
 #include "clang/ASTMatchers/ASTMatchFinder.h"
 #include "clang/Basic/Diagnostic.h"
 #include "clang/Basic/DiagnosticIDs.h"
+#include "clang/Basic/SourceManager.h"
 #include "clang/Frontend/CompilerInstance.h"
 #include "clang/Frontend/MultiplexConsumer.h"
 #include "clang/Lex/Preprocessor.h"
@@ -133,6 +134,40 @@ filterFastChecks(const tidy::ClangTidyCheckFactories &All,
   return Fast;
 }
 
+// Suppression is an alternative to the check's fixes, not part of those fixes.
+void addSuppressionFixes(llvm::StringRef Code, Diag &D) {
+  if (!D.InsideMainFile || D.Name.empty())
+    return;
+  auto Offset = positionToOffset(Code, D.Range.start);
+  if (!Offset) {
+    llvm::consumeError(Offset.takeError());
+    return;
+  }
+  size_t LineStart = Code.take_front(*Offset).rfind('\n');
+  LineStart = LineStart == llvm::StringRef::npos ? 0 : LineStart + 1;
+  size_t LineEnd = Code.find('\n', *Offset);
+  if (LineEnd == llvm::StringRef::npos)
+    LineEnd = Code.size();
+  // Insert before the whole line ending, preserving CRLF files.
+  if (LineEnd > LineStart && Code[LineEnd - 1] == '\r')
+    --LineEnd;
+  llvm::StringRef Line = Code.slice(LineStart, LineEnd);
+  llvm::StringRef Indent =
+      Line.take_while([](char C) { return C == ' ' || C == '\t'; });
+
+  auto AddFix = [&](llvm::StringRef Kind, size_t Offset, std::string Text) {
+    Position P = offsetToPosition(Code, Offset);
+    Fix F;
+    F.Message = ("suppress this warning with " + Kind).str();
+    F.Edits.push_back(TextEdit{Range{P, P}, std::move(Text)});
+    D.Fixes.push_back(std::move(F));
+  };
+  AddFix("NOLINT", LineEnd, " // NOLINT(" + D.Name + ")");
+  llvm::StringRef Newline = Code.contains("\r\n") ? "\r\n" : "\n";
+  AddFix("NOLINTNEXTLINE", LineStart,
+         (Indent + "// NOLINTNEXTLINE(" + D.Name + ")" + Newline).str());
+}
+
 /// MatchFinder normally runs from HandleTranslationUnit(), before clangd has
 /// consumed its token stream and restricted AST traversal to main-file decls.
 /// Delay that one callback until ASTListener::afterExecute().
@@ -224,6 +259,8 @@ public:
     Context->setASTContext(&CI.getASTContext());
     Context->setCurrentFile(Filename);
     Context->setSelfContainedDiags(true);
+    const auto &SM = CI.getSourceManager();
+    MainFileCode = SM.getBufferData(SM.getMainFileID());
     tidy::ClangTidyCheckFactories Factories = *AllFactories;
 #if CLANG_TIDY_ENABLE_QUERY_BASED_CUSTOM_CHECKS
     if (Context->canExperimentalCustomChecks() &&
@@ -323,6 +360,7 @@ public:
       CleanMessage(Note.Message);
     for (auto &Fix : D.Fixes)
       CleanMessage(Fix.Message);
+    addSuppressionFixes(MainFileCode, D);
     if (llvm::StringRef(D.Name).starts_with("misc-unused-") &&
         !llvm::is_contained(D.Tags, DiagnosticTag::Unnecessary))
       D.Tags.push_back(DiagnosticTag::Unnecessary);
@@ -334,6 +372,8 @@ public:
 private:
   std::shared_ptr<const TidyProvider> Provider;
   std::optional<tidy::ClangTidyOptions> Options;
+  // Owned by the CompilerInstance, which outlives diagnostic finalization.
+  llvm::StringRef MainFileCode;
   // Destruction order matters: Finder and checks refer to Context.
   std::optional<tidy::ClangTidyContext> Context;
   std::vector<std::unique_ptr<tidy::ClangTidyCheck>> Checks;
