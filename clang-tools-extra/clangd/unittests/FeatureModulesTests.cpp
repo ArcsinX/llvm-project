@@ -7,15 +7,21 @@
 //===----------------------------------------------------------------------===//
 
 #include "Annotations.h"
+#include "ClangTidyFeatureModule.h"
+#include "Compiler.h"
+#include "Feature.h"
 #include "FeatureModule.h"
 #include "Selection.h"
+#include "TestFS.h"
 #include "TestTU.h"
 #include "refactor/Tweak.h"
 #include "support/Logger.h"
 #include "clang/AST/Decl.h"
 #include "clang/Basic/DiagnosticFrontend.h"
+#include "clang/Basic/DiagnosticLex.h"
 #include "clang/Frontend/CompilerInstance.h"
 #include "clang/Frontend/FrontendOptions.h"
+#include "clang/Frontend/MultiplexConsumer.h"
 #include "clang/Lex/PPCallbacks.h"
 #include "clang/Lex/Preprocessor.h"
 #include "llvm/Support/Error.h"
@@ -301,6 +307,166 @@ TEST(FeatureModulesTest, FinalizeDiagnostic) {
   EXPECT_THAT(TU.build().getDiagnostics(), testing::SizeIs(1));
   EXPECT_EQ(Notes, 1u);
   EXPECT_EQ(Fixes, 1u);
+}
+
+TEST(FeatureModulesTest, DiagnosticMetadata) {
+  auto Module = std::make_unique<TestModule>();
+  Module->SawDiagnostic = [](const clang::Diagnostic &, clangd::Diag &D) {
+    D.Name = "test-check";
+    D.Source = Diag::ClangTidy;
+  };
+  FeatureModuleSet Modules;
+  Modules.add(std::move(Module));
+  auto TU = TestTU::withCode("int value = missing; // error-ok");
+  TU.FeatureModules = &Modules;
+  auto AST = TU.build();
+  ASSERT_THAT(AST.getDiagnostics(), testing::SizeIs(1));
+  EXPECT_EQ(AST.getDiagnostics().front().Name, "test-check");
+  EXPECT_EQ(AST.getDiagnostics().front().Source, Diag::ClangTidy);
+}
+
+TEST(FeatureModulesTest, ClangTidyWarningOptionsBeforeBeginSourceFile) {
+  auto Build = [](bool Suppress, bool ExtraArgsBefore) {
+    std::vector<std::string> Warnings;
+    bool ReachedPPCallbacks = false;
+    auto Observer = std::make_unique<TestModule>();
+    Observer->BeforePPCallbacks = [&](CompilerInstance &) {
+      ReachedPPCallbacks = true;
+    };
+    Observer->SawDiagnostic = [&](const clang::Diagnostic &Info,
+                                  clangd::Diag &D) {
+      if (Info.getID() == diag::warn_mmap_umbrella_dir_not_found) {
+        EXPECT_FALSE(ReachedPPCallbacks);
+        Warnings.push_back(D.Message);
+      }
+    };
+    FeatureModuleSet Modules;
+    Modules.add(std::move(Observer));
+    Modules.add(std::make_unique<ClangTidyFeatureModule>(
+        [=](tidy::ClangTidyOptions &Opts, llvm::StringRef) {
+          Opts.Checks = "-*";
+          if (Suppress) {
+            auto &Args =
+                ExtraArgsBefore ? Opts.ExtraArgsBefore : Opts.ExtraArgs;
+            Args = {"-Wno-incomplete-umbrella"};
+          }
+        }));
+    auto TU = TestTU::withCode("int value;");
+    TU.FeatureModules = &Modules;
+    TU.ExtraArgs = {"-fmodules",
+                    "-fmodule-map-file=" + testPath("module.modulemap")};
+    TU.AdditionalFiles["module.modulemap"] =
+        R"(module M { umbrella "missing" })";
+
+    // Load the module map in BeginSourceFile without a separate preamble build.
+    // Observe the diagnostic directly: warnings outside the main file need not
+    // survive StoreDiags filtering, but their emission must still be
+    // controlled.
+    MockFS FS;
+    auto Inputs = TU.inputs(FS);
+    IgnoreDiagnostics Diags;
+    auto CI = buildCompilerInvocation(Inputs, Diags);
+    EXPECT_TRUE(CI);
+    if (CI)
+      EXPECT_TRUE(ParsedAST::build(testPath(TU.Filename), Inputs, std::move(CI),
+                                   {}, nullptr));
+    EXPECT_TRUE(ReachedPPCallbacks);
+    return Warnings;
+  };
+  EXPECT_THAT(Build(false, false),
+              testing::ElementsAre("umbrella directory 'missing' not found"));
+  EXPECT_THAT(Build(true, false), testing::IsEmpty());
+  EXPECT_THAT(Build(true, true), testing::IsEmpty());
+}
+
+TEST(FeatureModulesTest, ClangTidyProviderLifetime) {
+  auto State = std::make_shared<int>(0);
+  std::weak_ptr<int> WeakState = State;
+  auto Module = std::make_unique<ClangTidyFeatureModule>(
+      [State = std::move(State)](tidy::ClangTidyOptions &, llvm::StringRef) {});
+  EXPECT_FALSE(WeakState.expired());
+  auto Listener = Module->astListeners();
+  ASSERT_NE(Listener, nullptr);
+
+  // Replacing the provider affects new builds, not an existing listener.
+  Module->setProvider({});
+  EXPECT_EQ(Module->astListeners(), nullptr);
+  Module.reset();
+  EXPECT_FALSE(WeakState.expired());
+  Listener.reset();
+  EXPECT_TRUE(WeakState.expired());
+}
+
+TEST(FeatureModulesTest, ClangTidyDoesNotReinitializeConsumer) {
+  if (!CLANGD_TIDY_CHECKS)
+    GTEST_SKIP() << "Requires clang-tidy checks";
+  class InitializationCounter final : public MultiplexConsumer {
+  public:
+    InitializationCounter(std::unique_ptr<ASTConsumer> Consumer,
+                          unsigned &Count)
+        : MultiplexConsumer(std::move(Consumer)), Count(Count) {}
+    void Initialize(ASTContext &Ctx) override {
+      ++Count;
+      MultiplexConsumer::Initialize(Ctx);
+    }
+
+  private:
+    unsigned &Count;
+  };
+  unsigned Initializations = 0;
+  auto Module = std::make_unique<TestModule>();
+  Module->BeforePPCallbacks = [&](CompilerInstance &CI) {
+    if (CI.getFrontendOpts().ProgramAction == frontend::ParseSyntaxOnly)
+      CI.setASTConsumer(std::make_unique<InitializationCounter>(
+          CI.takeASTConsumer(), Initializations));
+  };
+  FeatureModuleSet Modules;
+  Modules.add(std::move(Module));
+  auto TU = TestTU::withCode("int *p = 0;");
+  TU.FeatureModules = &Modules;
+  TU.ClangTidyProvider = addTidyChecks("modernize-use-nullptr");
+  EXPECT_THAT(TU.build().getDiagnostics(), testing::SizeIs(1));
+  // Installing tidy's multiplexer must not initialize the existing consumer
+  // again after setASTConsumer() has already initialized it above.
+  EXPECT_EQ(Initializations, 1u);
+}
+
+TEST(FeatureModulesTest, ClangTidyWithOtherModules) {
+  if (!CLANGD_TIDY_CHECKS)
+    GTEST_SKIP() << "Requires clang-tidy checks";
+  bool SawPreamble = false;
+  bool SawMainFile = false;
+  auto Module = std::make_unique<TestModule>();
+  Module->BeforePPCallbacks = [&](CompilerInstance &CI) {
+    if (CI.getFrontendOpts().ProgramAction != frontend::ParseSyntaxOnly)
+      SawPreamble = true;
+  };
+  Module->AfterExecute = [&](CompilerInstance &) { SawMainFile = true; };
+  Module->FinalizeDiagnostic = [](clangd::Diag &D) {
+    // The tidy finalizer must not duplicate a tag set by another module.
+    if (D.Name == "modernize-use-nullptr")
+      D.Tags.push_back(DiagnosticTag::Deprecated);
+  };
+  FeatureModuleSet Modules;
+  Modules.add(std::move(Module));
+
+  auto TU = TestTU::withCode("int *p = 0;");
+  TU.HeaderCode = "void headerFunc();";
+  TU.FeatureModules = &Modules;
+  TU.ClangTidyProvider = addTidyChecks("modernize-use-nullptr");
+  ASSERT_NE(TU.preamble(), nullptr);
+  EXPECT_TRUE(SawPreamble);
+  // The same TestTU and caller-owned modules remain usable across builds.
+  for (unsigned I = 0; I != 2; ++I) {
+    auto AST = TU.build();
+    ASSERT_THAT(AST.getDiagnostics(), testing::SizeIs(1));
+    const auto &D = AST.getDiagnostics().front();
+    EXPECT_EQ(D.Name, "modernize-use-nullptr");
+    EXPECT_EQ(D.Source, Diag::ClangTidy);
+    EXPECT_THAT(D.Tags, testing::ElementsAre(DiagnosticTag::Deprecated));
+  }
+  EXPECT_TRUE(SawMainFile);
+  EXPECT_EQ(Modules.end() - Modules.begin(), 1);
 }
 
 } // namespace

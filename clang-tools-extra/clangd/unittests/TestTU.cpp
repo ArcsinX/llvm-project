@@ -7,6 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "TestTU.h"
+#include "ClangTidyFeatureModule.h"
 #include "CompileCommands.h"
 #include "Compiler.h"
 #include "Diagnostics.h"
@@ -23,6 +24,39 @@
 
 namespace clang {
 namespace clangd {
+namespace {
+
+// TestTU only uses the AST hooks. Forward them without taking ownership of the
+// caller's modules, so clang-tidy can participate in the same build.
+class BorrowedASTModule final : public FeatureModule {
+public:
+  explicit BorrowedASTModule(FeatureModule &Module) : Module(Module) {}
+  std::unique_ptr<ASTListener> astListeners() override {
+    return Module.astListeners();
+  }
+
+private:
+  FeatureModule &Module;
+};
+
+FeatureModuleSet modulesForBuild(const TestTU &TU) {
+  FeatureModuleSet Modules;
+  if (TU.FeatureModules)
+    for (auto &Module : *TU.FeatureModules)
+      Modules.add(std::unique_ptr<FeatureModule>(
+          std::make_unique<BorrowedASTModule>(Module)));
+  if (TU.ClangTidyProvider) {
+    // TU outlives the synchronous preamble/AST build, so borrowing its provider
+    // here is safe and lets a TestTU be built repeatedly.
+    Modules.add(std::make_unique<ClangTidyFeatureModule>(
+        [&TU](tidy::ClangTidyOptions &Opts, llvm::StringRef Filename) {
+          TU.ClangTidyProvider(Opts, Filename);
+        }));
+  }
+  return Modules;
+}
+
+} // namespace
 
 ParseInputs TestTU::inputs(MockFS &FS) const {
   std::string FullFilename = testPath(Filename),
@@ -73,8 +107,6 @@ ParseInputs TestTU::inputs(MockFS &FS) const {
     FS.OverlayRealFileSystemForModules = true;
   Inputs.TFS = &FS;
   Inputs.Opts = ParseOptions();
-  if (ClangTidyProvider)
-    Inputs.ClangTidyProvider = ClangTidyProvider;
   Inputs.Index = ExternalIndex;
   return Inputs;
 }
@@ -101,6 +133,8 @@ std::shared_ptr<const PreambleData>
 TestTU::preamble(PreambleParsedCallback PreambleCallback) const {
   MockFS FS;
   auto Inputs = inputs(FS);
+  auto Modules = modulesForBuild(*this);
+  Inputs.FeatureModules = &Modules;
   IgnoreDiagnostics Diags;
   auto CI = buildCompilerInvocation(Inputs, Diags);
   assert(CI && "Failed to build compilation invocation.");
@@ -116,6 +150,8 @@ ParsedAST TestTU::build() const {
   MockFS FS;
   auto Inputs = inputs(FS);
   Inputs.Opts = ParseOpts;
+  auto Modules = modulesForBuild(*this);
+  Inputs.FeatureModules = &Modules;
   StoreDiags Diags;
   auto CI = buildCompilerInvocation(Inputs, Diags);
   assert(CI && "Failed to build compilation invocation.");

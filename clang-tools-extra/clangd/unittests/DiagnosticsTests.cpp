@@ -824,6 +824,24 @@ TEST(DiagnosticTest, ClangTidyEnablesClangWarning) {
   EXPECT_THAT(TU.build().getDiagnostics(), SizeIs(1));
 }
 
+TEST(DiagnosticTest, ClangTidyCompilerWarningsWithoutChecks) {
+  auto TU = TestTU::withCode("static void foo() {} // error-ok\n");
+  TU.ClangTidyProvider = [](tidy::ClangTidyOptions &Opts, llvm::StringRef) {
+    Opts.Checks = "-*,clang-diagnostic-*";
+    Opts.ExtraArgs = {"-Wunused-function"};
+    Opts.WarningsAsErrors = "clang-diagnostic-unused-function";
+  };
+  EXPECT_THAT(
+      TU.build().getDiagnostics(),
+      ElementsAre(AllOf(diagName("-Wunused-function"), diagSource(Diag::Clang),
+                        diagSeverity(DiagnosticsEngine::Error))));
+
+  // NOLINT takes precedence over WarningsAsErrors even without any tidy checks.
+  TU.Code =
+      "static void foo() {} // NOLINT(clang-diagnostic-unused-function)\n";
+  EXPECT_THAT(TU.build().getDiagnostics(), IsEmpty());
+}
+
 TEST(DiagnosticTest, LongFixMessages) {
   // We limit the size of printed code.
   Annotations Source(R"cpp(

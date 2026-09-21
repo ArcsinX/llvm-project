@@ -68,6 +68,7 @@ add_clang_library(clangDaemon STATIC
   ClangdServer.cpp
   CodeComplete.cpp
   CodeCompletionStrings.cpp
+  ClangTidyFeatureModule.cpp
   CollectMacros.cpp
   CompileCommands.cpp
   Compiler.cpp

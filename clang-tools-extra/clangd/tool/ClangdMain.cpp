@@ -7,6 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "ClangdMain.h"
+#include "ClangTidyFeatureModule.h"
 #include "ClangdLSPServer.h"
 #include "CodeComplete.h"
 #include "Compiler.h"
@@ -1030,7 +1031,6 @@ clangd accepts flags on the commandline, and in the CLANGD_FLAGS environment var
     Providers.push_back(provideDefaultChecks());
     Providers.push_back(disableUnusableChecks());
     ClangTidyOptProvider = combine(std::move(Providers));
-    Opts.ClangTidyProvider = ClangTidyOptProvider;
   }
   Opts.UseDirtyHeaders = UseDirtyHeaders;
   Opts.PreambleParseForwardingFunctions = PreambleParseForwardingFunctions;
@@ -1047,6 +1047,13 @@ clangd accepts flags on the commandline, and in the CLANGD_FLAGS environment var
   if (ForceOffsetEncoding != OffsetEncoding::UnsupportedEncoding)
     Opts.Encoding = ForceOffsetEncoding;
 
+  FeatureModuleSet ModuleSet = FeatureModuleSet::fromRegistry();
+  if (EnableClangTidy)
+    ModuleSet.add(std::make_unique<ClangTidyFeatureModule>(
+        std::move(ClangTidyOptProvider)));
+  if (ModuleSet.begin() != ModuleSet.end())
+    Opts.FeatureModules = &ModuleSet;
+
   if (CheckFile.getNumOccurrences()) {
     llvm::SmallString<256> Path;
     if (auto Error =
@@ -1059,10 +1066,6 @@ clangd accepts flags on the commandline, and in the CLANGD_FLAGS environment var
                ? 0
                : static_cast<int>(ErrorResultCode::CheckFailed);
   }
-
-  FeatureModuleSet ModuleSet = FeatureModuleSet::fromRegistry();
-  if (ModuleSet.begin() != ModuleSet.end())
-    Opts.FeatureModules = &ModuleSet;
 
   // Initialize and run ClangdLSPServer.
   // Change stdin to binary to not lose \r\n on windows.
