@@ -233,8 +233,3 @@ add_subdirectory(index/remote)
 if(CLANGD_BUILD_DEXP)
   add_subdirectory(index/dex/dexp)
 endif()
-
-option(CLANGD_BUILD_EXAMPLES "Build clangd examples" OFF)
-if(CLANGD_BUILD_EXAMPLES)
-  add_subdirectory(examples)
-endif()
