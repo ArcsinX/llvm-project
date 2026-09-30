@@ -3906,6 +3906,43 @@ TEST(PseudoModuleTest, DocumentDraftLifecycleAndDiagnostics) {
   EXPECT_EQ(Mod.getDocument(File), "");
 }
 
+TEST(PseudoModuleTest, DiagnosticsConditionalBranchMissingBrace) {
+  PseudoModule Mod;
+  llvm::StringRef Code = "#ifdef X\nvoid f(){\n#else\nvoid g()\n#endif\n}\n";
+
+  auto Diags = Mod.getDiagnostics(Code);
+  ASSERT_TRUE(bool(Diags)) << llvm::toString(Diags.takeError());
+  EXPECT_FALSE(Diags->empty());
+
+  bool FoundMissingBraceInElse = false;
+  bool FoundUnmatchedCloseBrace = false;
+
+  for (const auto &D : *Diags) {
+    if (D.code == "missing-brace" &&
+        D.message.find("conditional branch") != std::string::npos) {
+      FoundMissingBraceInElse = true;
+      EXPECT_EQ(D.severity, 1);
+    }
+    if (D.code == "unmatched-brace") {
+      FoundUnmatchedCloseBrace = true;
+      EXPECT_EQ(D.severity, 1);
+    }
+  }
+
+  EXPECT_TRUE(FoundMissingBraceInElse);
+  EXPECT_TRUE(FoundUnmatchedCloseBrace);
+}
+
+TEST(PseudoModuleTest, DiagnosticsConditionalBranchClean) {
+  PseudoModule Mod;
+  llvm::StringRef Code = "#ifdef X\nvoid f(){\n#else\nvoid g(){\n#endif\n}\n";
+
+  auto Diags = Mod.getDiagnostics(Code);
+  ASSERT_TRUE(bool(Diags)) << llvm::toString(Diags.takeError());
+  EXPECT_TRUE(Diags->empty())
+      << "Expected 0 diagnostics, got: " << Diags->size();
+}
+
 } // namespace
 } // namespace clangd
 } // namespace clang

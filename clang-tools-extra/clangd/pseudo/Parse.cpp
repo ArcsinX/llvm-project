@@ -21,6 +21,7 @@ std::unique_ptr<ParseOutput> parseCode(llvm::StringRef Code) {
   auto DirectiveStructure = pseudo::DirectiveTree::parse(Out->RawStream);
   pseudo::chooseConditionalBranches(DirectiveStructure, Out->RawStream);
   auto StrippedStream = DirectiveStructure.stripDirectives(Out->RawStream);
+  Out->Directives = std::move(DirectiveStructure);
   Out->ParseableStream = pseudo::stripAttributes(
       pseudo::stripComments(pseudo::cook(StrippedStream, LangOpts)));
   pseudo::pairBrackets(Out->ParseableStream);

@@ -35,6 +35,7 @@ struct ParseOutput {
   pseudo::Disambiguation Disambig;
   pseudo::TokenStream RawStream;
   pseudo::TokenStream ParseableStream;
+  pseudo::DirectiveTree Directives;
 };
 
 std::unique_ptr<ParseOutput> parseCode(llvm::StringRef Code);
