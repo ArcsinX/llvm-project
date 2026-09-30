@@ -330,11 +330,27 @@ std::vector<Diagnostic> getDiagnostics(const ParseOutput &Parsed,
   if (!Parsed.Root || Parsed.Root->kind() == pseudo::ForestNode::Opaque) {
     if (Diags.empty()) {
       Diagnostic D;
-      D.range = Range{Position{0, 0}, offsetToPosition(Code, Code.size())};
+      pseudo::Token::Index StartIdx =
+          Parsed.Root ? Parsed.Root->startTokenIndex() : 0;
+      if (StartIdx < Parsed.ParseableStream.tokens().size()) {
+        const auto &Tok = Parsed.ParseableStream.tokens()[StartIdx];
+        if (Tok.Kind != tok::eof) {
+          D.range = tokenRange(Tok, Parsed, Code);
+          D.message =
+              "syntax error: unexpected token '" + Tok.text().str() + "'";
+        } else {
+          D.range = Range{offsetToPosition(Code, Code.size()),
+                          offsetToPosition(Code, Code.size())};
+          D.message = "syntax error: unexpected end of file";
+        }
+      } else {
+        D.range = Range{offsetToPosition(Code, Code.size()),
+                        offsetToPosition(Code, Code.size())};
+        D.message = "syntax error: unexpected token";
+      }
       D.severity = DiagnosticSeverityError;
       D.source = "pseudo-parser";
       D.code = "syntax-error";
-      D.message = "syntax error: failed to parse translation unit";
       AddDiag(std::move(D));
     }
     return Diags;

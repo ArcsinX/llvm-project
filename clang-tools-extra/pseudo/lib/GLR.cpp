@@ -649,9 +649,45 @@ ForestNode &glrParse(const ParseParams &Params, SymbolID StartSymbol,
       Reduce(Heads, /*allow all reductions*/ tokenSymbol(tok::unknown));
 
       glrRecover(Heads, I, Params, Lang, NextHeads);
+      if (NextHeads.empty()) {
+        auto DeclSym = Lang.G.findNonterminal("declaration");
+        if (DeclSym) {
+          const GSS::Node *BestHead = nullptr;
+          LRTable::StateID BestNewState = 0;
+          for (const auto *Head : Heads) {
+            if (auto NewState = Lang.Table.getGoToState(Head->State, *DeclSym)) {
+              BestHead = Head;
+              BestNewState = *NewState;
+              break;
+            }
+          }
+          if (BestHead) {
+            Token::Index End = I + 1;
+            const auto &Tok = Params.Code.tokens()[I];
+            if (const auto *Right = Tok.pair()) {
+              if (Right > &Tok)
+                End = Params.Code.index(*Right) + 1;
+            } else {
+              while (End < Params.Code.tokens().size() &&
+                     Params.Code.tokens()[End - 1].Kind != tok::semi &&
+                     Params.Code.tokens()[End - 1].Kind != tok::r_brace &&
+                     Params.Code.tokens()[End].Kind != tok::eof) {
+                ++End;
+              }
+            }
+            if (End > Params.Code.tokens().size())
+              End = Params.Code.tokens().size();
+
+            const ForestNode &Placeholder =
+                Params.Forest.createOpaque(*DeclSym, I);
+            const GSS::Node *NewHead =
+                Params.GSStack.addNode(BestNewState, &Placeholder, {BestHead});
+            NextHeads.push_back(NewHead);
+            I = End;
+          }
+        }
+      }
       if (NextHeads.empty())
-        // FIXME: Ensure the `_ := start-symbol` rules have a fallback
-        // error-recovery strategy attached. Then this condition can't happen.
         return Params.Forest.createOpaque(StartSymbol, /*Token::Index=*/0);
     } else
       ++I;

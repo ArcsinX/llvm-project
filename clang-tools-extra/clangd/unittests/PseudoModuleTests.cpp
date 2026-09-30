@@ -4137,6 +4137,40 @@ TEST(PseudoModuleTest, PreprocessorConditionDiagnostics) {
   }
 }
 
+TEST(PseudoModuleTest, TrailingBracesGrammarError) {
+  PseudoModule Mod;
+  llvm::StringRef Code = "int f() {} {}";
+  std::string File = testPath("test.cpp");
+  auto Diags = Mod.getDiagnostics(File, Code);
+  ASSERT_TRUE(bool(Diags));
+  ASSERT_FALSE(Diags->empty());
+
+  for (const auto &D : *Diags) {
+    EXPECT_NE(D.message, "syntax error: failed to parse translation unit");
+    // Must point specifically to the stray `{}` around column 11, not column 0!
+    EXPECT_GE(D.range.start.character, 10);
+  }
+
+  // AST must still parse int f() {}
+  auto AST = Mod.getAST(File, Code);
+  ASSERT_TRUE(bool(AST));
+  ASSERT_TRUE(AST->has_value());
+  EXPECT_EQ((*AST)->kind, "TranslationUnit");
+  EXPECT_FALSE((*AST)->children.empty());
+  bool FoundF = false;
+  for (const auto &Child : (*AST)->children) {
+    if (Child.detail == "f")
+      FoundF = true;
+  }
+  EXPECT_TRUE(FoundF);
+
+  // DocumentSymbols must still return f
+  auto Syms = Mod.getDocumentSymbols(Code);
+  ASSERT_TRUE(bool(Syms));
+  ASSERT_FALSE(Syms->empty());
+  EXPECT_EQ((*Syms)[0].name, "f");
+}
+
 } // namespace
 
 
