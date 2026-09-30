@@ -104,6 +104,121 @@ void checkBracketDiagnostics(const pseudo::TokenStream &Stream,
   }
 }
 
+void checkPreprocessorDiagnostics(
+    const pseudo::DirectiveTree &Tree, const ParseOutput &Parsed,
+    llvm::StringRef Code, llvm::function_ref<void(Diagnostic)> AddDiag,
+    bool TopLevel = true) {
+  auto DirectiveRange = [&](const pseudo::DirectiveTree::Directive &Dir) -> Range {
+    if (Dir.Tokens.size() == 0 ||
+        Dir.Tokens.Begin >= Parsed.RawStream.tokens().size()) {
+      Position Pos = offsetToPosition(Code, Code.size());
+      return Range{Pos, Pos};
+    }
+    size_t StartTokIdx = Dir.Tokens.Begin;
+    size_t EndTokIdx = Dir.Tokens.End > Dir.Tokens.Begin ? Dir.Tokens.End - 1
+                                                        : Dir.Tokens.Begin;
+    if (EndTokIdx >= Parsed.RawStream.tokens().size())
+      EndTokIdx = Parsed.RawStream.tokens().size() - 1;
+    size_t StartOff =
+        tokenStartOffset(Parsed.RawStream.tokens()[StartTokIdx], Parsed);
+    size_t EndOff =
+        tokenEndOffset(Parsed.RawStream.tokens()[EndTokIdx], Parsed);
+    return Range{offsetToPosition(Code, StartOff),
+                 offsetToPosition(Code, EndOff)};
+  };
+
+  for (const auto &Chunk : Tree.Chunks) {
+    if (const auto *Dir = std::get_if<pseudo::DirectiveTree::Directive>(&Chunk)) {
+      if (TopLevel) {
+        if (Dir->Kind == tok::pp_endif) {
+          Diagnostic D;
+          D.range = DirectiveRange(*Dir);
+          D.severity = DiagnosticSeverityError;
+          D.source = "pseudo-parser";
+          D.code = "unmatched-endif";
+          D.message = "'#endif' without '#if'";
+          AddDiag(std::move(D));
+        } else if (Dir->Kind == tok::pp_else) {
+          Diagnostic D;
+          D.range = DirectiveRange(*Dir);
+          D.severity = DiagnosticSeverityError;
+          D.source = "pseudo-parser";
+          D.code = "unmatched-else";
+          D.message = "'#else' without '#if'";
+          AddDiag(std::move(D));
+        } else if (Dir->Kind == tok::pp_elif ||
+                   Dir->Kind == tok::pp_elifdef ||
+                   Dir->Kind == tok::pp_elifndef) {
+          Diagnostic D;
+          D.range = DirectiveRange(*Dir);
+          D.severity = DiagnosticSeverityError;
+          D.source = "pseudo-parser";
+          D.code = "unmatched-elif";
+          D.message = "'#elif' without '#if'";
+          AddDiag(std::move(D));
+        }
+      }
+    } else if (const auto *Cond =
+                   std::get_if<pseudo::DirectiveTree::Conditional>(&Chunk)) {
+      // Check if conditional is unterminated (missing #endif)
+      if (Cond->End.Kind != tok::pp_endif || Cond->End.Tokens.size() == 0) {
+        Diagnostic D;
+        if (!Cond->Branches.empty()) {
+          const auto &OpeningDir = Cond->Branches.front().first;
+          D.range = DirectiveRange(OpeningDir);
+          llvm::StringRef DirName = "#if";
+          switch (OpeningDir.Kind) {
+          case tok::pp_ifdef:
+            DirName = "#ifdef";
+            break;
+          case tok::pp_ifndef:
+            DirName = "#ifndef";
+            break;
+          case tok::pp_if:
+            DirName = "#if";
+            break;
+          default:
+            break;
+          }
+          D.message =
+              ("unterminated '" + DirName + "'; expected matching '#endif'").str();
+        } else {
+          Position Pos = offsetToPosition(Code, Code.size());
+          D.range = Range{Pos, Pos};
+          D.message =
+              "unterminated conditional directive; expected matching '#endif'";
+        }
+        D.severity = DiagnosticSeverityError;
+        D.source = "pseudo-parser";
+        D.code = "missing-endif";
+        AddDiag(std::move(D));
+      }
+
+      // Check for multiple #else or #elif after #else
+      bool SeenElse = false;
+      for (const auto &Branch : Cond->Branches) {
+        if (SeenElse) {
+          Diagnostic D;
+          D.range = DirectiveRange(Branch.first);
+          D.severity = DiagnosticSeverityError;
+          D.source = "pseudo-parser";
+          D.code = "unexpected-directive";
+          D.message = Branch.first.Kind == tok::pp_else
+                          ? "'#else' after '#else'"
+                          : "'#elif' after '#else'";
+          AddDiag(std::move(D));
+        }
+        if (Branch.first.Kind == tok::pp_else)
+          SeenElse = true;
+
+        // Recursively check nested directive tree within the branch
+        checkPreprocessorDiagnostics(Branch.second, Parsed, Code, AddDiag,
+                                     /*TopLevel=*/false);
+      }
+    }
+  }
+}
+
 void collectConditionals(
     pseudo::DirectiveTree &Tree,
     std::vector<pseudo::DirectiveTree::Conditional *> &Conds) {
@@ -122,8 +237,12 @@ void collectBranchTokens(const pseudo::DirectiveTree &Tree,
   for (const auto &Chunk : Tree.Chunks) {
     if (const auto *CodeChunk =
             std::get_if<pseudo::DirectiveTree::Code>(&Chunk)) {
-      for (const auto &Tok : RawStream.tokens(CodeChunk->Tokens))
-        Tokens.push_back(Tok);
+      if (CodeChunk->Tokens.Begin <= RawStream.tokens().size() &&
+          CodeChunk->Tokens.End <= RawStream.tokens().size() &&
+          CodeChunk->Tokens.Begin <= CodeChunk->Tokens.End) {
+        for (const auto &Tok : RawStream.tokens(CodeChunk->Tokens))
+          Tokens.push_back(Tok);
+      }
     } else if (const auto *CondChunk =
                    std::get_if<pseudo::DirectiveTree::Conditional>(&Chunk)) {
       for (const auto &Branch : CondChunk->Branches)
@@ -136,7 +255,7 @@ struct BranchBrackets {
   int UnclosedBraces = 0;
   int UnclosedParens = 0;
   int UnclosedSquares = 0;
-  const pseudo::Token *LastCodeToken = nullptr;
+  std::optional<pseudo::Token> LastCodeToken;
 };
 
 BranchBrackets analyzeBranchBrackets(const pseudo::DirectiveTree &BranchTree,
@@ -149,7 +268,7 @@ BranchBrackets analyzeBranchBrackets(const pseudo::DirectiveTree &BranchTree,
   for (const auto &Tok : Tokens) {
     if (Tok.Kind == tok::comment)
       continue;
-    BB.LastCodeToken = &Tok;
+    BB.LastCodeToken = Tok;
     if (Tok.Kind == tok::l_brace || Tok.Kind == tok::l_paren ||
         Tok.Kind == tok::l_square) {
       Stack.push_back(Tok.Kind);
@@ -190,8 +309,22 @@ std::vector<Diagnostic> getDiagnostics(const ParseOutput &Parsed,
       Diags.push_back(std::move(D));
   };
 
-  // 1. Bracket / brace mismatches on primary ParseableStream
+  // 1. Preprocessor condition checks (missing #endif, unmatched #endif/#else/#elif, etc.)
+  checkPreprocessorDiagnostics(Parsed.Directives, Parsed, Code, AddDiag);
+
+  // 2. Bracket / brace mismatches on primary ParseableStream
   checkBracketDiagnostics(Parsed.ParseableStream, Parsed, Code, AddDiag);
+
+  // If the file is empty or only whitespace/comments, no syntax diagnostics
+  bool HasCodeTokens = false;
+  for (const auto &Tok : Parsed.ParseableStream.tokens()) {
+    if (Tok.Kind != tok::eof && Tok.Kind != tok::comment) {
+      HasCodeTokens = true;
+      break;
+    }
+  }
+  if (!HasCodeTokens)
+    return Diags;
 
   // 2. Grammar syntax errors: opaque recovery nodes in the primary forest
   if (!Parsed.Root || Parsed.Root->kind() == pseudo::ForestNode::Opaque) {
@@ -265,19 +398,23 @@ std::vector<Diagnostic> getDiagnostics(const ParseOutput &Parsed,
         break;
 
       // Check if branch B is missing an opening brace when an outer closing brace exists
-      if (PrimaryUnclosed > BranchStats[B].UnclosedBraces) {
+      if (Cond->End.Kind == tok::pp_endif && Cond->End.Tokens.size() > 0 &&
+          PrimaryUnclosed > BranchStats[B].UnclosedBraces) {
         bool HasOuterClosingBrace = false;
-        for (size_t Idx = Cond->End.Tokens.End;
-             Idx < Parsed.RawStream.tokens().size(); ++Idx) {
-          const auto &Tok = Parsed.RawStream.tokens()[Idx];
-          if (Tok.Kind == tok::comment)
-            continue;
-          if (Tok.Kind == tok::r_brace) {
-            HasOuterClosingBrace = true;
-            break;
+        size_t EndIdx = Cond->End.Tokens.End;
+        if (EndIdx <= Parsed.RawStream.tokens().size()) {
+          for (size_t Idx = EndIdx; Idx < Parsed.RawStream.tokens().size();
+               ++Idx) {
+            const auto &Tok = Parsed.RawStream.tokens()[Idx];
+            if (Tok.Kind == tok::comment)
+              continue;
+            if (Tok.Kind == tok::r_brace) {
+              HasOuterClosingBrace = true;
+              break;
+            }
+            if (Tok.Kind == tok::l_brace)
+              break;
           }
-          if (Tok.Kind == tok::l_brace)
-            break;
         }
 
         if (HasOuterClosingBrace && BranchStats[B].LastCodeToken) {
@@ -304,8 +441,18 @@ std::vector<Diagnostic> getDiagnostics(const ParseOutput &Parsed,
         auto AltStripped = AltTree.stripDirectives(Parsed.RawStream);
         auto AltParseable = pseudo::stripAttributes(
             pseudo::stripComments(pseudo::cook(AltStripped, LangOpts)));
-        pseudo::pairBrackets(AltParseable);
 
+        bool AltHasCodeTokens = false;
+        for (const auto &Tok : AltParseable.tokens()) {
+          if (Tok.Kind != tok::eof && Tok.Kind != tok::comment) {
+            AltHasCodeTokens = true;
+            break;
+          }
+        }
+        if (!AltHasCodeTokens)
+          continue;
+
+        pseudo::pairBrackets(AltParseable);
         checkBracketDiagnostics(AltParseable, Parsed, Code, AddDiag);
 
         if (StartSym) {

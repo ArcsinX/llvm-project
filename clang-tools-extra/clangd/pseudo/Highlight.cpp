@@ -19,12 +19,14 @@ namespace clangd {
 llvm::Expected<std::vector<HighlightingToken>>
 PseudoModule::getSemanticHighlightings(llvm::StringRef Code) {
   auto Parsed = parseCode(Code);
-  if (!Parsed || !Parsed->Root)
+  if (!Parsed)
     return llvm::make_error<llvm::StringError>(
         "Pseudo-parser failed to build parse forest",
         llvm::inconvertibleErrorCode());
 
   std::vector<HighlightingToken> Tokens;
+  if (!Parsed->Root)
+    return Tokens;
 
   // Build scopes and decls
   std::vector<LexicalScope> Scopes;

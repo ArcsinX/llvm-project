@@ -32,6 +32,19 @@ std::unique_ptr<ParseOutput> parseCode(llvm::StringRef Code) {
   if (!StartSym)
     return nullptr;
 
+  bool HasTokens = false;
+  for (const auto &Tok : Out->ParseableStream.tokens()) {
+    if (Tok.Kind != tok::eof && Tok.Kind != tok::comment) {
+      HasTokens = true;
+      break;
+    }
+  }
+
+  if (!HasTokens) {
+    // Empty file or comments/whitespace only: valid empty translation unit!
+    return Out;
+  }
+
   Out->Root = &pseudo::glrParse(
       pseudo::ParseParams{Out->ParseableStream, Out->Arena, Out->GSS},
       *StartSym, Lang);

@@ -207,10 +207,13 @@ PseudoModule::getHover(PathRef File, llvm::StringRef Code, Position Pos) {
 
   // 2. Parse current file
   auto Parsed = parseCode(Code);
-  if (!Parsed || !Parsed->Root)
+  if (!Parsed)
     return llvm::make_error<llvm::StringError>(
         "Pseudo-parser failed to parse code",
         llvm::inconvertibleErrorCode());
+
+  if (!Parsed->Root)
+    return std::nullopt;
 
   auto Offset = positionToOffset(Code, Pos);
   if (!Offset)

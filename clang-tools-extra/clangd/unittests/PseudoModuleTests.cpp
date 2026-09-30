@@ -3943,6 +3943,202 @@ TEST(PseudoModuleTest, DiagnosticsConditionalBranchClean) {
       << "Expected 0 diagnostics, got: " << Diags->size();
 }
 
+TEST(PseudoModuleTest, EmptyAndWhitespaceFileHandling) {
+  PseudoModule Mod;
+  std::string File = testPath("empty_test.cpp");
+
+  std::vector<std::string> TestInputs = {
+      "",
+      "   \n\t\r\n   ",
+      "// Just a single comment line\n",
+      "/* Multi-line comment\n * without any code\n */\n",
+  };
+
+  for (const auto &Code : TestInputs) {
+    // 1. Diagnostics: must succeed with 0 diagnostics
+    auto Diags = Mod.getDiagnostics(Code);
+    ASSERT_TRUE(bool(Diags))
+        << "Failed for input [" << Code
+        << "]: " << llvm::toString(Diags.takeError());
+    EXPECT_TRUE(Diags->empty())
+        << "Diagnostics not empty for input [" << Code << "]";
+
+    // 2. AST: must return a valid TranslationUnit node
+    auto AST = Mod.getAST(File, Code);
+    ASSERT_TRUE(bool(AST))
+        << "Failed for input [" << Code
+        << "]: " << llvm::toString(AST.takeError());
+    ASSERT_TRUE(AST->has_value());
+    EXPECT_EQ((*AST)->kind, "TranslationUnit");
+    EXPECT_TRUE((*AST)->children.empty());
+
+    // 3. DocumentSymbols: must succeed and be empty
+    auto Syms = Mod.getDocumentSymbols(Code);
+    ASSERT_TRUE(bool(Syms))
+        << "Failed for input [" << Code
+        << "]: " << llvm::toString(Syms.takeError());
+    EXPECT_TRUE(Syms->empty());
+
+    // 4. SemanticTokens: must succeed and be empty
+    auto SemTokens = Mod.getSemanticTokens(Code);
+    ASSERT_TRUE(bool(SemTokens))
+        << "Failed for input [" << Code
+        << "]: " << llvm::toString(SemTokens.takeError());
+    EXPECT_TRUE(SemTokens->tokens.empty());
+
+    // 5. FoldingRanges: must succeed and be empty
+    auto Folding = Mod.getFoldingRanges(Code, /*LineFoldingOnly=*/false);
+    ASSERT_TRUE(bool(Folding))
+        << "Failed for input [" << Code
+        << "]: " << llvm::toString(Folding.takeError());
+    EXPECT_TRUE(Folding->empty());
+
+    // 6. Hover: must return std::nullopt without error
+    auto H = Mod.getHover(File, Code, Position{0, 0});
+    ASSERT_TRUE(bool(H))
+        << "Failed for input [" << Code
+        << "]: " << llvm::toString(H.takeError());
+    EXPECT_FALSE(H->has_value());
+
+    // 7. LocateSymbolAt: must return empty vector without error
+    auto Loc = Mod.locateSymbolAt(File, Code, Position{0, 0});
+    ASSERT_TRUE(bool(Loc))
+        << "Failed for input [" << Code
+        << "]: " << llvm::toString(Loc.takeError());
+    EXPECT_TRUE(Loc->empty());
+  }
+}
+
+TEST(PseudoModuleTest, ConditionalBranchesCrashReproducer) {
+  PseudoModule Mod;
+  llvm::StringRef Code =
+      "#ifdef X\nint f() {\n#elif Y\nint g()\n#else\nint ff(*\n#endif\n}";
+  std::string File = testPath("test.cpp");
+  auto Diags = Mod.getDiagnostics(File, Code);
+  ASSERT_TRUE(bool(Diags));
+  EXPECT_FALSE(Diags->empty());
+
+  bool FoundMissingBrace = false;
+  bool FoundMissingParen = false;
+  for (const auto &D : *Diags) {
+    if (D.code == "missing-brace")
+      FoundMissingBrace = true;
+    if (D.code == "missing-paren")
+      FoundMissingParen = true;
+  }
+  EXPECT_TRUE(FoundMissingBrace);
+  EXPECT_TRUE(FoundMissingParen);
+
+  auto AST = Mod.getAST(File, Code);
+  ASSERT_TRUE(bool(AST));
+  auto Syms = Mod.getDocumentSymbols(Code);
+  ASSERT_TRUE(bool(Syms));
+  auto SemTokens = Mod.getSemanticTokens(Code);
+  ASSERT_TRUE(bool(SemTokens));
+  auto Folding = Mod.getFoldingRanges(Code, false);
+  ASSERT_TRUE(bool(Folding));
+
+  for (int Line = 0; Line < 8; ++Line) {
+    for (int Col = 0; Col < 10; ++Col) {
+      auto H = Mod.getHover(File, Code, Position{Line, Col});
+      ASSERT_TRUE(bool(H));
+      auto Loc = Mod.locateSymbolAt(File, Code, Position{Line, Col});
+      ASSERT_TRUE(bool(Loc));
+      auto Refs = Mod.findReferences(File, Code, Position{Line, Col}, 100);
+      ASSERT_TRUE(bool(Refs));
+    }
+  }
+}
+
+TEST(PseudoModuleTest, PreprocessorConditionDiagnostics) {
+  PseudoModule Mod;
+
+  // 1. Missing #endif
+  {
+    llvm::StringRef Code = "#ifdef X\nint a;\n";
+    auto Diags = Mod.getDiagnostics("test.cpp", Code);
+    ASSERT_TRUE(bool(Diags));
+    ASSERT_FALSE(Diags->empty());
+    bool FoundMissingEndif = false;
+    for (const auto &D : *Diags) {
+      if (D.code == "missing-endif") {
+        FoundMissingEndif = true;
+        EXPECT_EQ(D.range.start.line, 0);
+        EXPECT_NE(D.message.find("unterminated '#ifdef'"), std::string::npos);
+      }
+    }
+    EXPECT_TRUE(FoundMissingEndif);
+  }
+
+  // 2. Unmatched #endif without #if
+  {
+    llvm::StringRef Code = "int a;\n#endif\n";
+    auto Diags = Mod.getDiagnostics("test.cpp", Code);
+    ASSERT_TRUE(bool(Diags));
+    ASSERT_FALSE(Diags->empty());
+    bool FoundUnmatchedEndif = false;
+    for (const auto &D : *Diags) {
+      if (D.code == "unmatched-endif") {
+        FoundUnmatchedEndif = true;
+        EXPECT_EQ(D.range.start.line, 1);
+        EXPECT_NE(D.message.find("'#endif' without '#if'"), std::string::npos);
+      }
+    }
+    EXPECT_TRUE(FoundUnmatchedEndif);
+  }
+
+  // 3. Unmatched #else and #elif without #if
+  {
+    llvm::StringRef Code = "int a;\n#else\nint b;\n#elif C\nint c;\n";
+    auto Diags = Mod.getDiagnostics("test.cpp", Code);
+    ASSERT_TRUE(bool(Diags));
+    ASSERT_FALSE(Diags->empty());
+    bool FoundElse = false, FoundElif = false;
+    for (const auto &D : *Diags) {
+      if (D.code == "unmatched-else")
+        FoundElse = true;
+      if (D.code == "unmatched-elif")
+        FoundElif = true;
+    }
+    EXPECT_TRUE(FoundElse);
+    EXPECT_TRUE(FoundElif);
+  }
+
+  // 4. #else after #else
+  {
+    llvm::StringRef Code = "#if 1\nint a;\n#else\nint b;\n#else\nint c;\n#endif\n";
+    auto Diags = Mod.getDiagnostics("test.cpp", Code);
+    ASSERT_TRUE(bool(Diags));
+    ASSERT_FALSE(Diags->empty());
+    bool FoundUnexpected = false;
+    for (const auto &D : *Diags) {
+      if (D.code == "unexpected-directive") {
+        FoundUnexpected = true;
+        EXPECT_NE(D.message.find("'#else' after '#else'"), std::string::npos);
+      }
+    }
+    EXPECT_TRUE(FoundUnexpected);
+  }
+
+  // 5. Nested unclosed conditional
+  {
+    llvm::StringRef Code = "#ifdef OUTER\n#ifdef INNER\nint a;\n#endif\n";
+    auto Diags = Mod.getDiagnostics("test.cpp", Code);
+    ASSERT_TRUE(bool(Diags));
+    ASSERT_FALSE(Diags->empty());
+    bool FoundMissingEndif = false;
+    for (const auto &D : *Diags) {
+      if (D.code == "missing-endif") {
+        FoundMissingEndif = true;
+        EXPECT_EQ(D.range.start.line, 0);
+      }
+    }
+    EXPECT_TRUE(FoundMissingEndif);
+  }
+}
+
 } // namespace
+
+
 } // namespace clangd
 } // namespace clang

@@ -2245,20 +2245,22 @@ llvm::Expected<std::optional<ASTNode>>
 getAST(llvm::StringRef File, llvm::StringRef Code,
        std::optional<Range> R) {
   auto Parsed = parseCode(Code);
-  if (!Parsed || !Parsed->Root)
+  if (!Parsed)
     return llvm::make_error<llvm::StringError>(
         "Pseudo-parser failed to build parse forest",
         llvm::inconvertibleErrorCode());
-
-  pseudo::Token::Index NumTokens = Parsed->ParseableStream.tokens().size();
 
   ASTNode TU;
   TU.role = "declaration";
   TU.kind = "TranslationUnit";
   TU.arcana = "TranslationUnitDecl";
+  TU.range = Range{Position{0, 0}, offsetToPosition(Code, Code.size())};
 
-  buildASTNodes(Parsed->Root, NumTokens, *Parsed, Code, TU.children,
-                /*InsideClass=*/false, /*EnclosingClass=*/"");
+  if (Parsed->Root) {
+    pseudo::Token::Index NumTokens = Parsed->ParseableStream.tokens().size();
+    buildASTNodes(Parsed->Root, NumTokens, *Parsed, Code, TU.children,
+                  /*InsideClass=*/false, /*EnclosingClass=*/"");
+  }
 
   if (!R)
     return std::optional<ASTNode>(std::move(TU));

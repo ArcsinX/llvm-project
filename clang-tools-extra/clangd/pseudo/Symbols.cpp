@@ -454,14 +454,16 @@ void collectFoldingRanges(const pseudo::ForestNode *N,
 llvm::Expected<std::vector<DocumentSymbol>>
 PseudoModule::getDocumentSymbols(llvm::StringRef Code) {
   auto Parsed = parseCode(Code);
-  if (!Parsed || !Parsed->Root)
+  if (!Parsed)
     return llvm::make_error<llvm::StringError>(
         "Pseudo-parser failed to build parse forest",
         llvm::inconvertibleErrorCode());
 
   std::vector<DocumentSymbol> Results;
-  pseudo::Token::Index NumTokens = Parsed->ParseableStream.tokens().size();
-  walkSymbols(Parsed->Root, NumTokens, *Parsed, Code, Results);
+  if (Parsed->Root) {
+    pseudo::Token::Index NumTokens = Parsed->ParseableStream.tokens().size();
+    walkSymbols(Parsed->Root, NumTokens, *Parsed, Code, Results);
+  }
   return Results;
 }
 
@@ -469,7 +471,7 @@ llvm::Expected<std::vector<SelectionRange>>
 PseudoModule::getSemanticRanges(llvm::StringRef Code,
                                 llvm::ArrayRef<Position> Positions) {
   auto Parsed = parseCode(Code);
-  if (!Parsed || !Parsed->Root)
+  if (!Parsed)
     return llvm::make_error<llvm::StringError>(
         "Pseudo-parser failed to build parse forest",
         llvm::inconvertibleErrorCode());
@@ -483,7 +485,9 @@ PseudoModule::getSemanticRanges(llvm::StringRef Code,
       continue;
     }
     std::vector<Range> Path;
-    collectSelectionRanges(Parsed->Root, NumTokens, *Parsed, Code, *Offset, Path);
+    if (Parsed->Root)
+      collectSelectionRanges(Parsed->Root, NumTokens, *Parsed, Code, *Offset,
+                             Path);
     if (Path.empty())
       Path.push_back(Range{Pos, Pos});
 
@@ -502,14 +506,16 @@ PseudoModule::getSemanticRanges(llvm::StringRef Code,
 llvm::Expected<std::vector<FoldingRange>>
 PseudoModule::getFoldingRanges(llvm::StringRef Code, bool LineFoldingOnly) {
   auto Parsed = parseCode(Code);
-  if (!Parsed || !Parsed->Root)
+  if (!Parsed)
     return llvm::make_error<llvm::StringError>(
         "Pseudo-parser failed to build parse forest",
         llvm::inconvertibleErrorCode());
 
   std::vector<FoldingRange> Results;
-  pseudo::Token::Index NumTokens = Parsed->ParseableStream.tokens().size();
-  collectFoldingRanges(Parsed->Root, NumTokens, *Parsed, Code, Results);
+  if (Parsed->Root) {
+    pseudo::Token::Index NumTokens = Parsed->ParseableStream.tokens().size();
+    collectFoldingRanges(Parsed->Root, NumTokens, *Parsed, Code, Results);
+  }
   return Results;
 }
 
