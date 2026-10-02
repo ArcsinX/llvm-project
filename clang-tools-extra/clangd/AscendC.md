@@ -328,3 +328,32 @@ for them. The comparison of the reference is based on its source and the
 reproduction before our launch fix; its exact pinned LLVM build was not built
 and tested side by side. Both implementations retain erased execution qualifiers
 and no-op intrinsics, so neither is a complete Ascend compiler or language checker.
+
+#### Comparison summary
+
+The DeepSeek column describes the inspected reference revision above. Expected
+failures are conclusions from its source, not results from running its exact
+pinned build. Our validation covers the cases listed here, not every AscendC
+program or CANN release.
+
+| Area | DeepSeek solution | This implementation |
+| --- | --- | --- |
+| Frontend activation | `CceExt` enabled by default in the patched frontend | Disabled by default; clangd enables it for `.asc` files or an explicit editor marker |
+| Ordinary C++ isolation | String-literal address-space conversion is ungated; extensions are enabled by default | Ascend conversions, storage rules, scope annotations and builtin keywords are gated by editor mode |
+| Integration with this LLVM revision | Patches target a different pinned LLVM revision | Adapted to this checkout, including AST serialization and diagnostic switches; clangd and tests build successfully |
+| Compatibility headers | Separate stub headers and installation/configuration setup | Headers embedded in clangd and supplied through a virtual filesystem for preambles, completion and indexing |
+| Editing without a CANN SDK | Main shim requires the SDK runtime-wrapper header | Fallback types, dimensions and launch declarations support standalone kernels; full SDK APIs still need CANN headers |
+| Processor selection | Shim hardcodes C310/3510 and both cube/vector definitions | Processor/core definitions supplied by the project; real SDK checks cover 2201 and 3510 vector profiles |
+| Host pointers passed to `__gm__` kernel parameters | No launch-specific conversion; the reported example is expected to fail with distinct address spaces enabled | Launch-specific conversion handles ordinary host pointers, templates, const pointees and void pointees |
+| Address-space diagnostics | Disable switch can erase all address-space distinctions to avoid errors | Launch conversion preserves pointee types, const checks and nested spaces; ordinary calls and assignments remain strict |
+| Launch configuration resolution | Resolves a single cached configure declaration | Resolves the configure overload set, checks arguments and handles invalid configurations without a kernel-AST assertion |
+| Numeric dynamic UB configuration | Depends on the shim/SDK configure declaration; no corresponding processor-specific compatibility overload | Matches verified SDK behavior: 2201 retains descriptor pointers; 3510 also accepts numeric byte counts, including literal zero |
+| Older SDK profiles without newer scalar aliases or SIMT | Typed catalogue and `cce::dim3` alias included unconditionally | Uses SDK intrinsic declarations for older profiles and conditions the dimension alias on SDK SIMT support |
+| Scalar namespace `dcci` calls in CANN 9.0.0 | Catalogue declares `dcci` globally but lacks `__cce_scalar::dcci` | Exposes the catalogue declarations in the scalar namespace; real SDK headers parse in the checked profiles |
+| Execution scopes and C++ lambdas | Skips recognized scope names with limited lookahead | Checks the complete scope annotation; standalone tests cover combined scopes and lambda captures |
+| Small floating types | Eight builtin types; E4M3 uses a different APFloat format | Retains eight distinct types; E4M3 uses the documented finite format with maximum 448; other approximate formats remain documented |
+| Builtin type completion | No added completion candidates for the Ascend type names | Ascend type names offered in type completion only in editor mode |
+| SIMD/SIMT parsing | Kernel-launch parser extension and SDK-dependent declarations | Standalone tests cover SIMD and four-argument SIMT parsing; a valid real-SDK SIMT kernel remains unverified |
+| Real tensor/pipeline/operator APIs | Supplied by CANN headers; reference fixtures were not run here | SDK kernels using `GlobalTensor`, `TPipe`, `TBuf`, `DataCopy` and `Add` pass; invalid `Add` arguments are diagnosed in both checked profiles |
+| Validation performed in this work | Source inspection at the recorded revision; no direct run of its pinned build | 17 AscendC tests, 441 existing clangd regression tests, 20 compiler comparison probes and real SDK kernel variants |
+| Complete Ascend semantics and compilation | Erased execution annotations and no-op intrinsics; no complete Ascend compiler | Same remaining semantic limits; no NPU code generation, linking or execution support |
