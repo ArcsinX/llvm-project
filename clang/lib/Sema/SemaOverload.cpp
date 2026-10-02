@@ -2397,6 +2397,19 @@ static bool tryOverflowBehaviorTypeConversion(Sema &S, Expr *From,
                                               StandardConversionSequence &SCS,
                                               bool CStyle);
 
+// The editor shim assigns target address space 1 to __gm__. Host launch
+// arguments carry ordinary pointers; only the outer pointee gains GM space.
+static bool isCceHostToGlobalPointerConversion(Sema &S, QualType FromType,
+                                               QualType ToType) {
+  if (!S.getLangOpts().CceExt || !S.CUDA().InCceKernelCall)
+    return false;
+  const auto *FromPtr = FromType->getAs<PointerType>();
+  const auto *ToPtr = ToType->getAs<PointerType>();
+  return FromPtr && ToPtr &&
+         FromPtr->getPointeeType().getAddressSpace() == LangAS::Default &&
+         ToPtr->getPointeeType().getAddressSpace() == getLangASFromTargetAS(1);
+}
+
 /// IsStandardConversion - Determines whether there is a standard
 /// conversion sequence (C++ [conv], C++ [over.ics.scs]) from the
 /// expression From to the type ToType. Standard conversion sequences
@@ -2732,6 +2745,10 @@ static bool IsStandardConversion(Sema &S, Expr* From, QualType ToType,
     SCS.Third = ICK_Function_Conversion;
   } else if (S.IsQualificationConversion(FromType, ToType, CStyle,
                                          ObjCLifetimeConversion)) {
+    // Marshalling host pointers is a conversion, rather than an exact match,
+    // so an ordinary-pointer overload remains preferable when available.
+    if (isCceHostToGlobalPointerConversion(S, FromType, ToType))
+      SCS.Second = ICK_Pointer_Conversion;
     SCS.Third = ICK_Qualification;
     SCS.QualificationIncludesObjCLifetime = ObjCLifetimeConversion;
     FromType = ToType;
@@ -4067,8 +4084,14 @@ Sema::IsQualificationConversion(QualType FromType, QualType ToType,
   //   in multi-level pointers, subject to the following rules: [...]
   bool PreviousToQualsIncludeConst = true;
   bool UnwrappedAnyPointer = false;
+  bool CceHostPointer =
+      isCceHostToGlobalPointerConversion(*this, FromType, ToType);
   while (Context.UnwrapSimilarTypes(FromType, ToType)) {
-    if (!isQualificationConversionStep(FromType, ToType, CStyle,
+    QualType StepFromType = FromType;
+    if (CceHostPointer && !UnwrappedAnyPointer)
+      StepFromType =
+          Context.getAddrSpaceQualType(StepFromType, getLangASFromTargetAS(1));
+    if (!isQualificationConversionStep(StepFromType, ToType, CStyle,
                                        !UnwrappedAnyPointer,
                                        PreviousToQualsIncludeConst,
                                        ObjCLifetimeConversion, getASTContext()))

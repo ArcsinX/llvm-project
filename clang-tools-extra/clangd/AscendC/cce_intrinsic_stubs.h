@@ -2083,4 +2083,9 @@ __cce_stub_attribute(__builtin_cce_dcci) void dcci(__ubuf__ void *dst, uint64_t 
 __cce_stub_attribute(__builtin_cce_dcci) void dcci(__ubuf__ void *dst, uint64_t entire);
 __cce_stub_attribute(__builtin_cce_dcci) void dcci(...);
 
+// CANN headers also call the scalar namespace spelling of this intrinsic.
+namespace __cce_scalar {
+using ::dcci;
+}
+
 #endif // __CCE_INTRINSIC_STUBS_H__

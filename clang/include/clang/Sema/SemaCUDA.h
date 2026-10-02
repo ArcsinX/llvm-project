@@ -46,6 +46,10 @@ class SemaCUDA : public SemaBase {
 public:
   SemaCUDA(Sema &S);
 
+  /// Ascend kernel launches marshal ordinary host pointers into GM parameters.
+  /// Scoped by BuildCallExpr; ordinary calls keep strict address-space rules.
+  bool InCceKernelCall = false;
+
   /// Increments our count of the number of times we've seen a pragma forcing
   /// functions to be __host__ __device__.  So long as this count is greater
   /// than zero, all functions encountered will be __host__ __device__.

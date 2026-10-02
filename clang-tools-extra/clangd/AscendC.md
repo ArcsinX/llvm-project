@@ -63,6 +63,10 @@ pins a different LLVM revision; the patches cannot be applied verbatim here.
   fallback declarations cover SIMD dynamic UB byte counts (including defaults),
   legacy descriptor pointers, and four-argument SIMT forms;
   SDK declarations determine supported forms when SDK headers are available.
+  For processor profile 3510, a constrained overload also handles
+  dynamic UB byte counts accepted by BiSheng's ASC driver but absent from
+  CANN 9.0.0's legacy runtime-wrapper declarations. Literal zero stays
+  unambiguous; the older 2201 profile retains its descriptor-pointer signature.
 - Eight distinct builtin types support printing, overload resolution, type
   traits, vectors, symbol identifiers and preamble serialization:
   `__hif8`, `__hif4x2`, `__fp8e4m3`, `__fp8e5m2`, `__fp8e6m2`, `__fp8e8m0`,
@@ -80,14 +84,23 @@ pins a different LLVM revision; the patches cannot be applied verbatim here.
   attaching an unresolved builtin alias to the AST.
 - Address spaces use distinct Clang `address_space(N)` types. Automatic
   address-qualified buffers and string literal conversion to target address
-  space pointers are permitted only in Ascend mode. Ordinary C++ keeps its
-  previous diagnostics.
+  space pointers are permitted only in Ascend mode. Kernel launches also
+  marshal ordinary host pointers into `__gm__` pointer parameters, as in the
+  CANN kernel-function example. This conversion changes only the outer pointee
+  address space and preserves pointee type and const checks; ordinary calls,
+  assignments and conversions between other address spaces stay strict.
+  Ordinary C++ keeps its previous diagnostics.
 - Ascend builtin type names are offered in type keyword completion only in
   Ascend mode; the reference did not add completion candidates for these types.
 - The shared printf diagnostic type switch also handles the added types; this
   was missing from the reference patch.
 - AArch64 is not advertised as an Ascend target. Target/core macros come from
   the user's command/configuration rather than an assumed device architecture.
+- SDKs without newer scalar aliases use their own intrinsic declarations;
+  the reference's typed catalogue is selected only for compatible profiles.
+  `cce::dim3` is used only when the SDK enables SIMT. The catalogue also exposes
+  its `dcci` declarations through `__cce_scalar`, matching real SDK callers.
+  `__VEC_SCOPE__` parses as an ordinary block without execution semantics.
 - Focused clangd tests exercise parsing, errors, scope isolation, preamble
   serialization, navigation, hover and completion.
 
@@ -101,9 +114,9 @@ No CANN SDK snapshot is included.
 | --- | --- |
 | C++ syntax, templates, classes | Clang's existing support, including inside kernels |
 | Kernel launch syntax | Three-argument SIMD and four-argument SIMT parsing; SDK overloads can supply additional forms |
-| Launch/kernel arguments | Ordinary overload resolution and type/count diagnostics; hardware limits are not checked |
+| Launch/kernel arguments | Host pointers can initialize `__gm__` pointer parameters at launches, including templates; ordinary overload resolution and type/count diagnostics remain; hardware limits are not checked |
 | Function qualifiers | `__global__`, `__aicore__`, `__aicpu__`, `__host__`, `__cube__`, `__vector__`, `__mix__` parse through compatibility macros |
-| Scheduling and VF annotations | `__schedmode__`, `__simd_vf__`, `__simd_callee__`, `__simt_vf__`, `__simt_callee__`, `__launch_bounds__`, `__maxnreg__` accepted syntactically |
+| Scheduling and VF annotations | `__schedmode__`, `__simd_vf__`, `__simd_callee__`, `__simt_vf__`, `__simt_callee__`, `__launch_bounds__`, `__maxnreg__`, `__VEC_SCOPE__` accepted syntactically |
 | Address spaces | `__gm__`, `__ubuf__`, `__ca__`, `__cb__`, `__cc__`, `__cbuf__`, `__fbuf__`, `__ssbuf__`, `__biasbuf__`; `__private__` maps to default space |
 | Small floating formats | Distinct types and byte sizes; several formats retain the reference's approximate constant evaluation semantics |
 | Half and bfloat16 | Existing Clang half/bfloat types, with native half arguments enabled in editor mode |
@@ -136,20 +149,59 @@ If:
 CompileFlags:
   Add:
     - -std=c++20
+    - -fdeclspec
     - -Ithird_party/cann/include
+    - -Ithird_party/cann/asc
     - -Ithird_party/cann/asc/include
-    - -isystemthird_party/cann/tools/bisheng_compiler/lib/clang/15.0.5/include
+    - -Ithird_party/cann/asc/include/basic_api
+    - -Ithird_party/cann/asc/include/adv_api
+    - -Ithird_party/cann/asc/include/utils
+    - -Ithird_party/cann/asc/include/simt_api
+    - -Ithird_party/cann/asc/include/basic_api/reg_compute
+    - -Ithird_party/cann/asc/impl/basic_api
+    - -Ithird_party/cann/asc/impl/adv_api
+    - -Ithird_party/cann/asc/impl/utils
+    - -Ithird_party/cann/asc/impl/simt_api
+    - -Ithird_party/cann/asc/impl/basic_api/reg_compute
+    - -Ithird_party/cann/ascendc/include/highlevel_api
+    - -idirafterthird_party/cann/tools/bisheng_compiler/lib/clang/15.0.5/include
+    # Example: device declarations for the 2201 vector-core profile.
+    - -D__NPU_ARCH__=2201
+    - -D__CCE_AICORE__=220
+    - -D__CCE_IS_AICORE__=1
+    - -D__DAV_C220_VEC__=1
+    - -D__DAV_VEC__=1
 ```
 
 Include paths are relative to each compilation command's working directory,
 which can differ from the directory containing `.clangd`. Adjust these relative
-paths for your build layout. Paths, compiler version and architecture definitions
-must match the actual SDK and selected processor. The reference installation
-script lists further include paths used by its C310 setup. Put compiler-only unsupported flags in
-`CompileFlags.Remove` as needed. In particular, an NPU target triple is not
-recognized by this host frontend; remove `--target`/`-target` from the clangd
-command if the compilation database supplies one. clangd does not infer a
-complete SDK setup from a `bisheng` executable.
+paths for your build layout. Reuse the SDK include paths from your project's
+compilation database when possible. Paths, compiler version and architecture
+definitions must match the actual SDK and selected processor. For profile 3510,
+use `__CCE_AICORE__=310`, `__NPU_ARCH__=3510`, `__DAV_C310__=1`,
+`__DAV_C310_VEC__=1`, and `__CCE_AICORE_SUPPORT_SIMT__=1` in place of the
+2201-specific definitions; keep the vector-core and device-parse definitions.
+These values were checked against BiSheng's device preprocessor output.
+
+The compiler headers use `-idirafter` so that clangd's own resource headers and
+the platform's standard headers take precedence. Putting both versions of
+Clang's `stdint.h` on preceding system include paths can leave integer types
+undefined because their header guards collide. `-fdeclspec` enables the SDK's
+builtin-variable property declarations.
+
+Put unsupported compiler flags in `CompileFlags.Remove` as needed, including
+`--asc-aicore-lang`, `--cce-aicore-lang`, `--npu-arch`, and other CANN driver
+options. An NPU target triple is not recognized by this frontend. Replace it
+with an appropriate host triple or remove it. A supported Linux host triple
+such as `--target=aarch64-linux-gnu` can be retained.
+
+On macOS, parsing this Linux SDK also requires matching Linux C/C++ headers.
+The integration checks used the compiler package's bundled `hcc/sysroot` with
+`--target=aarch64-linux-gnu`, `--sysroot`, `-nostdinc++`, and system include paths
+for its `aarch64-target-linux-gnu/include/c++/7.3.0` directory, the nested
+`aarch64-target-linux-gnu` directory, and `backward`. Supply those paths relative
+to the compilation command's working directory. clangd does not infer a complete
+SDK setup from a `bisheng` executable.
 
 For C++ kernels or headers opened without an inferred Ascend command:
 
@@ -183,7 +235,7 @@ code generation and the CANN runtime/toolchain integration.
 The build and checks completed on this checkout:
 
 - `ninja -C build -j 6 clangd ClangdTests`: succeeded.
-- All **13** `AscendC.*` tests passed.
+- All **17** `AscendC.*` tests passed.
 - **441** existing clangd regression tests passed across command handling,
   invocation construction, preambles, parsing, diagnostics, completion, hover,
   background indexing, symbol collection, references and navigation. Two tests
@@ -191,6 +243,9 @@ The build and checks completed on this checkout:
 - The rebuilt `clangd --check` completed with **0 errors** on a standalone
   `.asc` fixture combining templates, serialized types, the E4M3 maximum, VF
   annotations, address-qualified buffers and SIMD/SIMT launch forms.
+- The documented host-launch pointer pattern was reproduced with a standalone
+  `KernelAdd` declaration: before the fix, clangd rejected the ordinary pointer
+  arguments; after the fix, `clangd --check` completed with **0 errors**.
 - `git diff --check`: clean.
 
 Run the focused tests with:
@@ -202,9 +257,74 @@ build/tools/clang/tools/extra/clangd/unittests/ClangdTests --gtest_filter='Ascen
 See the focused `AscendC.*` tests in `unittests/AscendCTests.cpp`. They include a
 preamble round trip, both launch forms, all eight small floating types, positive
 and negative address space cases, ordinary C++ isolation, explicit opt-in,
-navigation/hover, symbol indexing, preamble reuse and builtin type completion.
+navigation/hover, symbol indexing, preamble reuse, builtin type completion and
+host-to-GM launch arguments with positive and negative conversion cases, an older
+SDK wrapper without SIMT/small-float aliases, and SDK launch configurations for
+2201 and 3510.
 
-A full CANN SDK is not present on this machine. Compatibility with its actual
-headers and real Ascend projects must be validated on a CANN installation;
-passing the standalone tests is not evidence of complete SDK or specification
-coverage.
+### Checks against the real compiler and SDK
+
+The official public
+[CANN 9.0.0 ARM Linux package](https://ascend-cann-open.obs.cn-north-4.myhuaweicloud.com/CANN/CANN%209.0.0/Ascend-cann_9.0.0_linux-aarch64.run)
+was downloaded, and its payload SHA-256 matched the value recorded in its
+installer. The compiler, AscendC development, runtime and operator-base packages
+were extracted without running the CANN installers. No SDK files are committed
+in this checkout. The package contains BiSheng based on Clang 15.0.5, build dated
+2026-04-25, and CANN 9.0.0 development headers.
+
+BiSheng was run in an ARM Ubuntu 22.04 Lima VM on this ARM Mac. Syntax checks used
+`--asc-aicore-lang --npu-arch=dav-2201` and
+`--asc-aicore-lang --npu-arch=dav-3510`, each with `-fsyntax-only -std=c++17`.
+The following comparisons used both processor profiles:
+
+| Probe | BiSheng | This clangd |
+| --- | --- | --- |
+| Host pointers to GM kernel parameters, including const and void pointees | Accepts | Accepts |
+| Dropping const, wrong pointee type, wrong argument count | Rejects | Rejects |
+| Ordinary host-pointer to GM assignment | Rejects | Rejects |
+| Kernel called without launch configuration | Rejects | Rejects for the tested ordinary-pointer argument; execution restrictions remain unimplemented |
+| Local UB buffers, execution scopes with C++ lambdas, small-format sizes | Accepts | Accepts |
+| Incorrect small-format size assertion | Rejects | Rejects |
+| Non-void kernel return, forbidden host-to-device function call | Rejects | Accepts; known editor-mode limits |
+| Numeric UB configuration | 2201 rejects; 3510 accepts | Same with the matching SDK profile; SDK-free fallback accepts both forms |
+| Real `GlobalTensor`, `TPipe`, `TBuf`, `DataCopy`, and `Add` kernel with ordinary host launch pointers | Accepts | Zero errors |
+| Same SDK kernel with an invalid `Add` count argument | Rejects | Rejects |
+
+Twenty standalone source probes were compared, plus the real SDK kernel and its
+invalid-argument variant. A numeric-configuration variant of that SDK kernel
+also confirmed the processor-dependent behavior. These checks exercise parsing
+and semantic diagnostics, without NPU code generation, linking or execution.
+They are not evidence of complete language or SDK coverage. Four-argument SIMT
+parsing is covered by standalone clangd tests; a valid real-SDK SIMT kernel was
+not validated in this comparison.
+
+The downloaded toolchain, VM, probes, comparison script and diagnostic logs are
+kept outside this repository in the requested `~/work/ascendc` directory. The
+`checks` directory contains `sdk_checks.py`, `sdk-*-results.json`, and the
+standalone matrix results. The VM can be managed from that directory:
+
+```sh
+export LIMA_HOME="$PWD/lima"
+limactl start ascendc
+limactl shell ascendc
+limactl stop ascendc
+```
+
+### Comparison with DeepSeek
+
+The reference was inspected at commit
+`f407eca30e07e647ce2e556f9b08e145b65362c7`. Its patches add string-literal address
+space conversion and local address-qualified variables, but no general
+host-pointer-to-GM conversion for kernel launches. Its default shim keeps distinct
+address spaces, so the reported host launch is expected to fail. Defining its
+address-space-disable switch can hide the error by erasing all address-space
+distinctions. This implementation instead adds a scoped launch conversion and
+tests the conversions that must remain invalid.
+
+The reference also hardcodes profile 3510, unconditionally uses `cce::dim3`, and
+lacks the scalar-namespace `dcci` declaration needed by the downloaded SDK. Our
+SDK checks exposed these assumptions, and the compatibility headers now account
+for them. The comparison of the reference is based on its source and the
+reproduction before our launch fix; its exact pinned LLVM build was not built
+and tested side by side. Both implementations retain erased execution qualifiers
+and no-op intrinsics, so neither is a complete Ascend compiler or language checker.

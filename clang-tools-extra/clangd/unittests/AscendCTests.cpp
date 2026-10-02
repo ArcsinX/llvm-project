@@ -66,6 +66,136 @@ TEST(AscendC, LaunchesAndPreamble) {
   EXPECT_EQ(V.Launches, 7u);
 }
 
+TEST(AscendC, SdkWithoutSimtOrSmallFloatAliases) {
+  auto TU = ascendTU(R"cpp(
+    __global__ __aicore__ void kernel(__gm__ int *p) {
+      __VEC_SCOPE__ { p[0] = 1; }
+    }
+    void launch(int *p) { kernel<<<1, nullptr, nullptr>>>(p); }
+  )cpp");
+  TU.ExtraArgs.push_back("-D__NPU_ARCH__=2201");
+  TU.ExtraArgs.push_back("-D__CCE_AICORE__=220");
+  TU.ExtraArgs.push_back("-I" + testPath("sdk"));
+  // Model an older SDK wrapper without newer floating aliases or cce::dim3.
+  TU.AdditionalFiles["sdk/__clang_cce_runtime_wrapper.h"] = R"cpp(
+    namespace __cce_scalar {}
+    unsigned int __cce_rtConfigureCall(unsigned int, void * = nullptr,
+                                       void * = nullptr);
+  )cpp";
+  auto AST = TU.build();
+  EXPECT_THAT(AST.getDiagnostics(), IsEmpty());
+}
+
+TEST(AscendC, SdkNumericLaunchConfiguration) {
+  for (const char *Arch : {"2201", "3510"}) {
+    auto TU = ascendTU(R"cpp(
+      __global__ void kernel(__gm__ int *p) {}
+      void launch(int *p, void *stream) {
+        kernel<<<1, nullptr, stream>>>(p);
+        kernel<<<1, 0, stream>>>(p);
+        kernel<<<1, 1024, stream>>>(p);
+        kernel<<<1, 1024>>>(p);
+        kernel<<<1, 1024.0, stream>>>(p);
+      }
+    )cpp");
+    TU.ExtraArgs.push_back(std::string("-D__NPU_ARCH__=") + Arch);
+    TU.ExtraArgs.push_back("-I" + testPath("sdk"));
+    TU.AdditionalFiles["sdk/__clang_cce_runtime_wrapper.h"] = R"cpp(
+      namespace __cce_scalar {}
+      unsigned int __cce_rtConfigureCall(unsigned int, void * = nullptr,
+                                         void * = nullptr);
+    )cpp";
+    if (llvm::StringRef(Arch) == "2201")
+      TU.Code += "\n// error-ok";
+    auto AST = TU.build();
+    if (llvm::StringRef(Arch) == "3510")
+      EXPECT_THAT(AST.getDiagnostics(), IsEmpty());
+    else
+      EXPECT_EQ(AST.getDiagnostics().size(), 3u);
+  }
+}
+
+TEST(AscendC, HostPointersInKernelLaunch) {
+  // Model the CANN kernel-function example without requiring SDK headers.
+  auto TU = ascendTU(R"cpp(
+    using uint8_t = unsigned char;
+    using uint32_t = unsigned int;
+    struct KernelAdd {
+      void Init(__gm__ uint8_t *, __gm__ uint8_t *, __gm__ uint8_t *);
+      void Process();
+    };
+    __global__ __aicore__ void add_custom(__gm__ uint8_t *x,
+                                        __gm__ uint8_t *y,
+                                        __gm__ uint8_t *z) {
+      KernelAdd op;
+      op.Init(x, y, z);
+      op.Process();
+    }
+    template<class T> __global__ void templated(__gm__ T *p) {}
+    __global__ void read_only(__gm__ const uint8_t *p) {}
+    __global__ void opaque(__gm__ void *p) {}
+    __global__ void plain(uint8_t *p) {}
+    __global__ void overloaded(__gm__ uint8_t *p) {}
+    __global__ void overloaded(uint8_t *p) {}
+    void add_custom_do(uint32_t numBlocks, void *l2ctrl, void *stream,
+                       uint8_t *x, uint8_t *y, uint8_t *z) {
+      add_custom<<<numBlocks, l2ctrl, stream>>>(x, y, z);
+      templated<<<1>>>(x);
+      templated<uint8_t><<<1>>>(x);
+      read_only<<<1>>>(x);
+      opaque<<<1>>>(x);
+      plain<<<1>>>(x);
+      overloaded<<<1>>>(x);
+      uint8_t buffer[4];
+      templated<<<1>>>(buffer);
+    }
+    template<class T> void dependent_launch(T *p) {
+      templated<<<1>>>(p);
+    }
+    void instantiate(uint8_t *p) { dependent_launch(p); }
+  )cpp");
+  auto AST = TU.build();
+  EXPECT_THAT(AST.getDiagnostics(), IsEmpty());
+  struct Visitor : RecursiveASTVisitor<Visitor> {
+    unsigned HostToGlobalCasts = 0;
+    bool VisitImplicitCastExpr(ImplicitCastExpr *E) {
+      if (E->getCastKind() == CK_AddressSpaceConversion)
+        ++HostToGlobalCasts;
+      return true;
+    }
+    bool VisitCUDAKernelCallExpr(CUDAKernelCallExpr *E) {
+      if (auto *FD = E->getDirectCallee(); FD && FD->getName() == "overloaded")
+        EXPECT_EQ(
+            FD->getParamDecl(0)->getType()->getPointeeType().getAddressSpace(),
+            LangAS::Default);
+      return true;
+    }
+  } V;
+  V.TraverseDecl(AST.getASTContext().getTranslationUnitDecl());
+  EXPECT_GE(V.HostToGlobalCasts, 8u);
+}
+
+TEST(AscendC, HostPointerLaunchConversionStaysRestricted) {
+  for (auto Code :
+       {"// error-ok\nvoid k(__gm__ int *); void f(__ubuf__ int *p) { "
+        "k<<<1>>>(p); }",
+        "// error-ok\nvoid k(__ubuf__ int *); void f(int *p) { k<<<1>>>(p); }",
+        "// error-ok\nvoid k(__gm__ int *); void f(float *p) { k<<<1>>>(p); }",
+        "// error-ok\nvoid k(__gm__ int *); void f(const int *p) { "
+        "k<<<1>>>(p); }",
+        "// error-ok\nvoid k(__gm__ int **); void f(int **p) { k<<<1>>>(p); }",
+        "// error-ok\nvoid k(__gm__ int *); void f(int *p) { k<<<1>>>(p); "
+        "k(p); }",
+        "// error-ok\nvoid k(__gm__ int *); void f(int *p) { k<<<1>>>(p); "
+        "__gm__ int *q = p; }",
+        "// error-ok\nvoid k(int *); void f(__gm__ int *p) { k<<<1>>>(p); }",
+        "// error-ok\nvoid k(__gm__ int *&); void f(int *p) { k<<<1>>>(p); "
+        "}"}) {
+    SCOPED_TRACE(Code);
+    EXPECT_FALSE(ascendTU(Code).build().getDiagnostics().empty());
+  }
+}
+
 TEST(AscendC, PreambleReuse) {
   auto TU = ascendTU("void f() { __fp8e4m3 value; }");
   TU.HeaderCode = "using serialized_fp8 = __fp8e4m3;";

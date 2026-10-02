@@ -52,6 +52,8 @@
 #define __simd_callee__
 #define __no_simd_vf_fusion__
 #define __callee__
+// Vector execution scopes are parsed as ordinary blocks in editor mode.
+#define __VEC_SCOPE__
 
 #define __cube__
 #define __vector__
@@ -104,10 +106,32 @@
 #define RT_CONFIGURE_CALL
 static inline unsigned int __CCE_RT_CONFIGURE_FUNC_NAME__(unsigned int, void *, void *) { return 0; }
 #include "cce_builtin_stubs.h"
+// The reference's typed catalogue requires the newer SDK scalar formats.
+// Earlier architectures use the declarations supplied by their own SDK.
+#if defined(__CCE_AICORE__) && \
+    (defined(__DAV_M300__) || defined(__DAV_310R6__) || \
+     defined(__DAV_L510__) || __NPU_ARCH__ == 3510 || \
+     __NPU_ARCH__ == 5102 || __NPU_ARCH__ == 9201 || __NPU_ARCH__ == 3801)
 #include "cce_intrinsic_stubs.h"
+#endif
 #include "cce_simt_stubs.h"
 #include "__clang_cce_runtime_wrapper.h"
+// BiSheng's ASC driver accepts dynamic UB byte counts on 3510 even when the
+// SDK wrapper declares only the legacy descriptor-pointer configuration.
+// A constrained template also keeps a literal zero unambiguous.
+#if __NPU_ARCH__ == 3510
+namespace __clangd_ascendc {
+template <class T, bool = __is_convertible(T, decltype(sizeof(0)))>
+struct NumericConfig {};
+template <class T> struct NumericConfig<T, true> { using type = unsigned int; };
+}
+template <class T>
+typename __clangd_ascendc::NumericConfig<T>::type
+__cce_rtConfigureCall(unsigned int, T, void * = nullptr);
+#endif
+#ifdef __CCE_AICORE_SUPPORT_SIMT__
 using dim3 = cce::dim3;
+#endif
 using namespace __cce_scalar;
 namespace __asc_aicore {}
 using namespace __asc_aicore;

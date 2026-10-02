@@ -6934,6 +6934,9 @@ ExprResult Sema::BuildCallExpr(Scope *Scope, Expr *Fn, SourceLocation LParenLoc,
                                MultiExprArg ArgExprs, SourceLocation RParenLoc,
                                Expr *ExecConfig, bool IsExecConfig,
                                bool AllowRecovery) {
+  llvm::SaveAndRestore CceKernelCall(
+      CUDA().InCceKernelCall, getLangOpts().CceExt && ExecConfig != nullptr);
+
   // Since this might be a postfix expression, get rid of ParenListExprs.
   ExprResult Result = MaybeConvertParenListExprToParenExpr(Scope, Fn);
   if (Result.isInvalid()) return ExprError();
