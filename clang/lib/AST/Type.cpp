@@ -3650,6 +3650,22 @@ StringRef BuiltinType::getName(const PrintingPolicy &Policy) const {
     return Policy.Half ? "half" : "__fp16";
   case BFloat16:
     return "__bf16";
+  case CceHif8:
+    return "__hif8";
+  case CceHif4x2:
+    return "__hif4x2";
+  case CceFp8E4M3:
+    return "__fp8e4m3";
+  case CceFp8E5M2:
+    return "__fp8e5m2";
+  case CceFp8E6M2:
+    return "__fp8e6m2";
+  case CceFp8E8M0:
+    return "__fp8e8m0";
+  case CceFp4E2M1x2:
+    return "__fp4e2m1x2";
+  case CceFp4E1M2x2:
+    return "__fp4e1m2x2";
   case Float:
     return "float";
   case Double:

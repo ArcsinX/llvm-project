@@ -475,6 +475,14 @@ NSAPI::getNSNumberFactoryMethodKind(QualType T) const {
   case BuiltinType::OMPArrayShaping:
   case BuiltinType::OMPIterator:
   case BuiltinType::BFloat16:
+  case BuiltinType::CceHif8:
+  case BuiltinType::CceHif4x2:
+  case BuiltinType::CceFp8E4M3:
+  case BuiltinType::CceFp8E5M2:
+  case BuiltinType::CceFp8E6M2:
+  case BuiltinType::CceFp8E8M0:
+  case BuiltinType::CceFp4E2M1x2:
+  case BuiltinType::CceFp4E1M2x2:
     break;
   }
 

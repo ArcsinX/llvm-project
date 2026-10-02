@@ -260,6 +260,14 @@ public:
   static const TST TST_bitint = clang::TST_bitint;
   static const TST TST_half = clang::TST_half;
   static const TST TST_BFloat16 = clang::TST_BFloat16;
+  static const TST TST_CceHif8 = clang::TST_CceHif8;
+  static const TST TST_CceHif4x2 = clang::TST_CceHif4x2;
+  static const TST TST_CceFp8E4M3 = clang::TST_CceFp8E4M3;
+  static const TST TST_CceFp8E5M2 = clang::TST_CceFp8E5M2;
+  static const TST TST_CceFp8E6M2 = clang::TST_CceFp8E6M2;
+  static const TST TST_CceFp8E8M0 = clang::TST_CceFp8E8M0;
+  static const TST TST_CceFp4E2M1x2 = clang::TST_CceFp4E2M1x2;
+  static const TST TST_CceFp4E1M2x2 = clang::TST_CceFp4E1M2x2;
   static const TST TST_float = clang::TST_float;
   static const TST TST_double = clang::TST_double;
   static const TST TST_float16 = clang::TST_Float16;

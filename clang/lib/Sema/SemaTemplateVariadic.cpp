@@ -1201,6 +1201,14 @@ bool Sema::containsUnexpandedParameterPacks(Declarator &D) {
   case TST_auto_type:
   case TST_decltype_auto:
   case TST_BFloat16:
+  case TST_CceHif8:
+  case TST_CceHif4x2:
+  case TST_CceFp8E4M3:
+  case TST_CceFp8E5M2:
+  case TST_CceFp8E6M2:
+  case TST_CceFp8E8M0:
+  case TST_CceFp4E2M1x2:
+  case TST_CceFp4E1M2x2:
 #define GENERIC_IMAGE_TYPE(ImgType, Id) case TST_##ImgType##_t:
 #include "clang/Basic/OpenCLImageTypes.def"
 #define HLSL_INTANGIBLE_TYPE(Name, Id, SingletonId) case TST_##Name:

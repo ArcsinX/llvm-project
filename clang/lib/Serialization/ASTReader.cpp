@@ -7954,6 +7954,30 @@ QualType ASTReader::GetType(TypeID ID) {
     case PREDEF_TYPE_BFLOAT16_ID:
       T = Context.BFloat16Ty;
       break;
+    case PREDEF_TYPE_CCE_HIF8_ID:
+      T = Context.CceHif8Ty;
+      break;
+    case PREDEF_TYPE_CCE_HIF4X2_ID:
+      T = Context.CceHif4x2Ty;
+      break;
+    case PREDEF_TYPE_CCE_FP8E4M3_ID:
+      T = Context.CceFp8E4M3Ty;
+      break;
+    case PREDEF_TYPE_CCE_FP8E5M2_ID:
+      T = Context.CceFp8E5M2Ty;
+      break;
+    case PREDEF_TYPE_CCE_FP8E6M2_ID:
+      T = Context.CceFp8E6M2Ty;
+      break;
+    case PREDEF_TYPE_CCE_FP8E8M0_ID:
+      T = Context.CceFp8E8M0Ty;
+      break;
+    case PREDEF_TYPE_CCE_FP4E2M1X2_ID:
+      T = Context.CceFp4E2M1x2Ty;
+      break;
+    case PREDEF_TYPE_CCE_FP4E1M2X2_ID:
+      T = Context.CceFp4E1M2x2Ty;
+      break;
     case PREDEF_TYPE_HALF_ID:
       T = Context.HalfTy;
       break;

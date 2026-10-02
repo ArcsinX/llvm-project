@@ -345,6 +345,14 @@ bool Declarator::isDeclarationOfFunction() const {
     case TST_void:
     case TST_wchar:
     case TST_BFloat16:
+    case TST_CceHif8:
+    case TST_CceHif4x2:
+    case TST_CceFp8E4M3:
+    case TST_CceFp8E5M2:
+    case TST_CceFp8E6M2:
+    case TST_CceFp8E8M0:
+    case TST_CceFp4E2M1x2:
+    case TST_CceFp4E1M2x2:
     case TST_typename_pack_indexing:
 #define GENERIC_IMAGE_TYPE(ImgType, Id) case TST_##ImgType##_t:
 #include "clang/Basic/OpenCLImageTypes.def"
@@ -579,6 +587,22 @@ const char *DeclSpec::getSpecifierName(DeclSpec::TST T,
   case DeclSpec::TST_unknown_anytype: return "__unknown_anytype";
   case DeclSpec::TST_atomic: return "_Atomic";
   case DeclSpec::TST_BFloat16: return "__bf16";
+  case DeclSpec::TST_CceHif8:
+    return "__hif8";
+  case DeclSpec::TST_CceHif4x2:
+    return "__hif4x2";
+  case DeclSpec::TST_CceFp8E4M3:
+    return "__fp8e4m3";
+  case DeclSpec::TST_CceFp8E5M2:
+    return "__fp8e5m2";
+  case DeclSpec::TST_CceFp8E6M2:
+    return "__fp8e6m2";
+  case DeclSpec::TST_CceFp8E8M0:
+    return "__fp8e8m0";
+  case DeclSpec::TST_CceFp4E2M1x2:
+    return "__fp4e2m1x2";
+  case DeclSpec::TST_CceFp4E1M2x2:
+    return "__fp4e1m2x2";
 #define GENERIC_IMAGE_TYPE(ImgType, Id) \
   case DeclSpec::TST_##ImgType##_t: \
     return #ImgType "_t";

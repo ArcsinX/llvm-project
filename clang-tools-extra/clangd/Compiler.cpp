@@ -7,6 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "Compiler.h"
+#include "AscendC.h"
 #include "support/Logger.h"
 #include "clang/Basic/TargetInfo.h"
 #include "clang/Driver/CreateInvocationFromArgs.h"
@@ -123,6 +124,14 @@ buildCompilerInvocation(const ParseInputs &Inputs, clang::DiagnosticConsumer &D,
   CI->getLangOpts().CommentOpts.ParseAllComments = true;
   CI->getLangOpts().RetainCommentsFromSystemHeaders = true;
 
+  bool Ascend = isAscendCFile(Inputs.CompileCommand.Filename);
+  for (const auto &Macro : CI->getPreprocessorOpts().Macros)
+    Ascend |= !Macro.second &&
+              (Macro.first == "__CLANGD_ASCENDC__" ||
+               llvm::StringRef(Macro.first).starts_with("__CLANGD_ASCENDC__="));
+  if (Ascend)
+    enableAscendC(*CI);
+
   disableUnsupportedOptions(*CI);
   return CI;
 }
@@ -137,6 +146,8 @@ prepareCompilerInstance(std::unique_ptr<clang::CompilerInvocation> CI,
   assert(!CI->getPreprocessorOpts().RetainRemappedFileBuffers &&
          "Setting RetainRemappedFileBuffers to true will cause a memory leak "
          "of ContentsBuffer");
+
+  VFS = addAscendCHeaders(*CI, std::move(VFS));
 
   // NOTE: we use Buffer.get() when adding remapped files, so we have to make
   // sure it will be released if no error is emitted.

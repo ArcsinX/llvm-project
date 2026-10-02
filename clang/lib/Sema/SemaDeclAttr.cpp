@@ -6408,6 +6408,14 @@ static void handleBuiltinAliasAttr(Sema &S, Decl *D, const ParsedAttr &AL) {
   unsigned BuiltinID = Ident->getBuiltinID();
   StringRef AliasName = cast<FunctionDecl>(D)->getIdentifier()->getName();
 
+  // Ascend CCE: allow clang_builtin_alias for __builtin_cce_* builtins.
+  // These are not known to standard clang (BuiltinID == 0) but should be
+  // accepted silently for IDE support of Ascend CCE headers.
+  StringRef BuiltinName = Ident->getName();
+  if (S.getLangOpts().CceExt && BuiltinID == 0 &&
+      BuiltinName.starts_with("__builtin_cce_"))
+    return;
+
   bool IsAArch64 = S.Context.getTargetInfo().getTriple().isAArch64();
   bool IsARM = S.Context.getTargetInfo().getTriple().isARM();
   bool IsRISCV = S.Context.getTargetInfo().getTriple().isRISCV();

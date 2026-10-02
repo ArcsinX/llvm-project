@@ -106,6 +106,14 @@
 using namespace clang;
 
 enum FloatingRank {
+  CceHif8Rank,
+  CceHif4x2Rank,
+  CceFp8E4M3Rank,
+  CceFp8E5M2Rank,
+  CceFp8E6M2Rank,
+  CceFp8E8M0Rank,
+  CceFp4E2M1x2Rank,
+  CceFp4E1M2x2Rank,
   BFloat16Rank,
   Float16Rank,
   HalfRank,
@@ -1522,6 +1530,16 @@ void ASTContext::InitBuiltinTypes(const TargetInfo &Target,
 
   InitBuiltinType(BFloat16Ty, BuiltinType::BFloat16);
 
+  // Ascend CCE 8-bit float types
+  InitBuiltinType(CceHif8Ty, BuiltinType::CceHif8);
+  InitBuiltinType(CceHif4x2Ty, BuiltinType::CceHif4x2);
+  InitBuiltinType(CceFp8E4M3Ty, BuiltinType::CceFp8E4M3);
+  InitBuiltinType(CceFp8E5M2Ty, BuiltinType::CceFp8E5M2);
+  InitBuiltinType(CceFp8E6M2Ty, BuiltinType::CceFp8E6M2);
+  InitBuiltinType(CceFp8E8M0Ty, BuiltinType::CceFp8E8M0);
+  InitBuiltinType(CceFp4E2M1x2Ty, BuiltinType::CceFp4E2M1x2);
+  InitBuiltinType(CceFp4E1M2x2Ty, BuiltinType::CceFp4E1M2x2);
+
   // Builtin type used to help define __builtin_va_list.
   VaListTagDecl = nullptr;
 
@@ -1855,6 +1873,24 @@ const llvm::fltSemantics &ASTContext::getFloatTypeSemantics(QualType T) const {
     llvm_unreachable("Not a floating point type!");
   case BuiltinType::BFloat16:
     return Target->getBFloat16Format();
+  case BuiltinType::CceHif8:
+    return llvm::APFloat::Float8E4M3FN();
+  case BuiltinType::CceHif4x2:
+    return llvm::APFloat::Float8E5M2FNUZ();
+  case BuiltinType::CceFp8E4M3:
+    // CANN specifies the finite E4M3 range [-448, 448].
+    return llvm::APFloat::Float8E4M3FN();
+  case BuiltinType::CceFp8E5M2:
+    return llvm::APFloat::Float8E5M2();
+  case BuiltinType::CceFp8E6M2:
+    // Editor-only approximation; retain a distinct 8-bit builtin type.
+    return llvm::APFloat::Float8E5M2();
+  case BuiltinType::CceFp8E8M0:
+    return llvm::APFloat::Float8E8M0FNU();
+  case BuiltinType::CceFp4E2M1x2:
+    return llvm::APFloat::Float8E4M3FNUZ();
+  case BuiltinType::CceFp4E1M2x2:
+    return llvm::APFloat::Float8E3M4();
   case BuiltinType::Float16:
     return Target->getHalfFormat();
   case BuiltinType::Half:
@@ -2328,6 +2364,17 @@ TypeInfo ASTContext::getTypeInfoImpl(const Type *T) const {
         Width = AuxTarget->getBFloat16Width();
         Align = AuxTarget->getBFloat16Align();
       }
+      break;
+    case BuiltinType::CceHif8:
+    case BuiltinType::CceHif4x2:
+    case BuiltinType::CceFp8E4M3:
+    case BuiltinType::CceFp8E5M2:
+    case BuiltinType::CceFp8E6M2:
+    case BuiltinType::CceFp8E8M0:
+    case BuiltinType::CceFp4E2M1x2:
+    case BuiltinType::CceFp4E1M2x2:
+      Width = 8;
+      Align = 8;
       break;
     case BuiltinType::Float16:
     case BuiltinType::Half:
@@ -3598,6 +3645,14 @@ static void encodeTypeForFunctionPointerAuth(const ASTContext &Ctx,
     case BuiltinType::OCLQueue:
     case BuiltinType::OCLReserveID:
     case BuiltinType::BFloat16:
+    case BuiltinType::CceHif8:
+    case BuiltinType::CceHif4x2:
+    case BuiltinType::CceFp8E4M3:
+    case BuiltinType::CceFp8E5M2:
+    case BuiltinType::CceFp8E6M2:
+    case BuiltinType::CceFp8E8M0:
+    case BuiltinType::CceFp4E2M1x2:
+    case BuiltinType::CceFp4E1M2x2:
     case BuiltinType::VectorQuad:
     case BuiltinType::VectorPair:
     case BuiltinType::DMR1024:
@@ -8282,6 +8337,22 @@ static FloatingRank getFloatingRank(QualType T) {
   case BuiltinType::LongDouble: return LongDoubleRank;
   case BuiltinType::Float128:   return Float128Rank;
   case BuiltinType::BFloat16:   return BFloat16Rank;
+  case BuiltinType::CceHif8:
+    return CceHif8Rank;
+  case BuiltinType::CceHif4x2:
+    return CceHif4x2Rank;
+  case BuiltinType::CceFp8E4M3:
+    return CceFp8E4M3Rank;
+  case BuiltinType::CceFp8E5M2:
+    return CceFp8E5M2Rank;
+  case BuiltinType::CceFp8E6M2:
+    return CceFp8E6M2Rank;
+  case BuiltinType::CceFp8E8M0:
+    return CceFp8E8M0Rank;
+  case BuiltinType::CceFp4E2M1x2:
+    return CceFp4E2M1x2Rank;
+  case BuiltinType::CceFp4E1M2x2:
+    return CceFp4E1M2x2Rank;
   case BuiltinType::Ibm128:     return Ibm128Rank;
   }
 }
@@ -9295,6 +9366,14 @@ static char getObjCEncodingForPrimitiveType(const ASTContext *C,
     case BuiltinType::NullPtr:    return '*'; // like char*
 
     case BuiltinType::BFloat16:
+    case BuiltinType::CceHif8:
+    case BuiltinType::CceHif4x2:
+    case BuiltinType::CceFp8E4M3:
+    case BuiltinType::CceFp8E5M2:
+    case BuiltinType::CceFp8E6M2:
+    case BuiltinType::CceFp8E8M0:
+    case BuiltinType::CceFp4E2M1x2:
+    case BuiltinType::CceFp4E1M2x2:
     case BuiltinType::Float16:
     case BuiltinType::Float128:
     case BuiltinType::Ibm128:

@@ -1,0 +1,4 @@
+The compatibility headers are adapted from deepseek-ai/clangd-ascend
+commit f407eca30e07e647ce2e556f9b08e145b65362c7 (MIT).
+No Huawei CANN SDK headers are included. LLVM frontend changes are adapted
+from its patches under Apache-2.0 WITH LLVM-exception. See AscendC.md.

@@ -1542,6 +1542,14 @@ Parser::isCXXDeclarationSpecifier(ImplicitTypenameContext AllowImplicitTypename,
   case tok::kw_float:
   case tok::kw_double:
   case tok::kw___bf16:
+  case tok::kw___hif8:
+  case tok::kw___hif4x2:
+  case tok::kw___fp8e4m3:
+  case tok::kw___fp8e5m2:
+  case tok::kw___fp8e6m2:
+  case tok::kw___fp8e8m0:
+  case tok::kw___fp4e2m1x2:
+  case tok::kw___fp4e1m2x2:
   case tok::kw__Float16:
   case tok::kw___float128:
   case tok::kw___ibm128:
@@ -1674,6 +1682,14 @@ bool Parser::isCXXDeclarationSpecifierAType() {
   case tok::kw_float:
   case tok::kw_double:
   case tok::kw___bf16:
+  case tok::kw___hif8:
+  case tok::kw___hif4x2:
+  case tok::kw___fp8e4m3:
+  case tok::kw___fp8e5m2:
+  case tok::kw___fp8e6m2:
+  case tok::kw___fp8e8m0:
+  case tok::kw___fp4e2m1x2:
+  case tok::kw___fp4e1m2x2:
   case tok::kw__Float16:
   case tok::kw___float128:
   case tok::kw___ibm128:

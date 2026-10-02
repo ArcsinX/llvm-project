@@ -31,6 +31,7 @@ gen_decision_forest(${CMAKE_CURRENT_SOURCE_DIR}/decision_forest_model DecisionFo
 add_custom_target(ClangdUnitTests)
 set_target_properties(ClangdUnitTests PROPERTIES FOLDER "Clang Tools Extra/Tests")
 add_unittest(ClangdUnitTests ClangdTests
+  AscendCTests.cpp
   Annotations.cpp
   ASTTests.cpp
   ASTSignalsTests.cpp

@@ -8,6 +8,7 @@
 
 #include "Preamble.h"
 #include "AST.h"
+#include "AscendC.h"
 #include "CollectMacros.h"
 #include "Compiler.h"
 #include "Config.h"
@@ -605,7 +606,8 @@ buildPreamble(PathRef FileName, CompilerInvocation CI,
     for (const auto &L : ASTListeners)
       L->finalizeDiagnostic(Diag);
   });
-  auto VFS = Inputs.TFS->view(Inputs.CompileCommand.Directory);
+  auto VFS =
+      addAscendCHeaders(CI, Inputs.TFS->view(Inputs.CompileCommand.Directory));
   llvm::IntrusiveRefCntPtr<DiagnosticsEngine> PreambleDiagsEngine =
       CompilerInstance::createDiagnostics(*VFS, CI.getDiagnosticOpts(),
                                           &PreambleDiagnostics,
@@ -740,7 +742,8 @@ bool isPreambleCompatible(const PreambleData &Preamble,
       llvm::MemoryBuffer::getMemBuffer(Inputs.Contents, FileName);
   auto Bounds = computePreambleBounds(CI.getLangOpts(), *ContentsBuffer,
                                       Inputs.Opts.SkipPreambleBuild);
-  auto VFS = Inputs.TFS->view(Inputs.CompileCommand.Directory);
+  auto VFS =
+      addAscendCHeaders(CI, Inputs.TFS->view(Inputs.CompileCommand.Directory));
 
   // Check that the set of required modules hasn't changed.
   // Preamble.RequiredModules->canReuse only verifies that the previously

@@ -53,6 +53,30 @@ bool SemaCUDA::PopForceHostDevice() {
 ExprResult SemaCUDA::ActOnExecConfigExpr(Scope *S, SourceLocation LLLLoc,
                                          MultiExprArg ExecConfig,
                                          SourceLocation GGGLoc) {
+  // Ascend launch configurations are described by the SDK's overloads.
+  // Keep both the configuration and kernel arguments in the AST for editor
+  // features. CUDA's target restrictions do not apply in this editor mode.
+  if (!getLangOpts().CUDA && getLangOpts().CceExt) {
+    auto &Context = getASTContext();
+    DeclarationName Name = &Context.Idents.get("__cce_rtConfigureCall");
+    LookupResult R(SemaRef, Name, LLLLoc, Sema::LookupOrdinaryName);
+    SemaRef.LookupQualifiedName(R, Context.getTranslationUnitDecl());
+    if (R.empty())
+      return ExprError(Diag(LLLLoc, diag::err_undeclared_var_use) << Name);
+    ExprResult Config = SemaRef.BuildDeclarationNameExpr(CXXScopeSpec(), R,
+                                                         /*NeedsADL=*/false);
+    if (Config.isInvalid())
+      return ExprError();
+    ExprResult Call = SemaRef.BuildCallExpr(S, Config.get(), LLLLoc, ExecConfig,
+                                            GGGLoc, nullptr,
+                                            /*IsExecConfig=*/true);
+    // Recovery ASTs can return a RecoveryExpr for an invalid configuration.
+    // CUDAKernelCallExpr requires its configuration to be a real CallExpr.
+    if (Call.isInvalid() || !isa<CallExpr>(Call.get()))
+      return ExprError();
+    return Call;
+  }
+
   bool IsDeviceKernelCall = false;
   switch (CurrentTarget()) {
   case CUDAFunctionTarget::Global:

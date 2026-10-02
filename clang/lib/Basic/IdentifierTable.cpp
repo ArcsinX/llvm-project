@@ -288,6 +288,18 @@ void IdentifierTable::AddKeywords(const LangOptions &LangOpts) {
 #define TESTING_KEYWORD(NAME, FLAGS)
 #include "clang/Basic/TokenKinds.def"
 
+  if (LangOpts.CceExt) {
+    AddKeyword("__cce_half", tok::kw_half, KEYALL, LangOpts, *this);
+    AddKeyword("__hif8", tok::kw___hif8, KEYALL, LangOpts, *this);
+    AddKeyword("__hif4x2", tok::kw___hif4x2, KEYALL, LangOpts, *this);
+    AddKeyword("__fp8e4m3", tok::kw___fp8e4m3, KEYALL, LangOpts, *this);
+    AddKeyword("__fp8e5m2", tok::kw___fp8e5m2, KEYALL, LangOpts, *this);
+    AddKeyword("__fp8e6m2", tok::kw___fp8e6m2, KEYALL, LangOpts, *this);
+    AddKeyword("__fp8e8m0", tok::kw___fp8e8m0, KEYALL, LangOpts, *this);
+    AddKeyword("__fp4e2m1x2", tok::kw___fp4e2m1x2, KEYALL, LangOpts, *this);
+    AddKeyword("__fp4e1m2x2", tok::kw___fp4e1m2x2, KEYALL, LangOpts, *this);
+  }
+
   if (LangOpts.ParseUnknownAnytype)
     AddKeyword("__unknown_anytype", tok::kw___unknown_anytype, KEYALL,
                LangOpts, *this);

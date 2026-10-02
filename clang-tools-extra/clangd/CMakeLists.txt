@@ -61,7 +61,25 @@ endif()
 include_directories(BEFORE "${CMAKE_CURRENT_BINARY_DIR}/../clang-tidy")
 include_directories(BEFORE "${CMAKE_CURRENT_SOURCE_DIR}/../include-cleaner/include")
 
+foreach(header cce_stubs.h cce_builtin_stubs.h cce_intrinsic_stubs.h cce_simt_stubs.h)
+  string(REPLACE "." "_" variable "${header}")
+  file(READ "${CMAKE_CURRENT_SOURCE_DIR}/AscendC/${header}" contents)
+  # Keep each literal within the C++ implementation's required size limit.
+  string(LENGTH "${contents}" length)
+  set(offset 0)
+  set(${variable} "")
+  while(offset LESS length)
+    string(SUBSTRING "${contents}" ${offset} 32768 chunk)
+    string(APPEND ${variable} "R\"ascendc(${chunk})ascendc\",\n")
+    math(EXPR offset "${offset} + 32768")
+  endwhile()
+  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/AscendC/${header}")
+endforeach()
+configure_file(AscendC/Headers.inc.in AscendCHeaders.inc @ONLY)
+
 add_clang_library(clangDaemon STATIC
+  AscendC.cpp
   AST.cpp
   ASTSignals.cpp
   ClangdLSPServer.cpp

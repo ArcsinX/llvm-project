@@ -1163,6 +1163,14 @@ enum PredefinedTypeIDs {
 
   /// The placeholder type for unresolved templates.
   PREDEF_TYPE_UNRESOLVED_TEMPLATE,
+  PREDEF_TYPE_CCE_HIF8_ID,
+  PREDEF_TYPE_CCE_HIF4X2_ID,
+  PREDEF_TYPE_CCE_FP8E4M3_ID,
+  PREDEF_TYPE_CCE_FP8E5M2_ID,
+  PREDEF_TYPE_CCE_FP8E6M2_ID,
+  PREDEF_TYPE_CCE_FP8E8M0_ID,
+  PREDEF_TYPE_CCE_FP4E2M1X2_ID,
+  PREDEF_TYPE_CCE_FP4E1M2X2_ID,
   // Sentinel value. Considered a predefined type but not useable as one.
   PREDEF_TYPE_LAST_ID
 };
@@ -1172,7 +1180,7 @@ enum PredefinedTypeIDs {
 ///
 /// Type IDs for non-predefined types will start at
 /// NUM_PREDEF_TYPE_IDs.
-const unsigned NUM_PREDEF_TYPE_IDS = 532;
+const unsigned NUM_PREDEF_TYPE_IDS = 540;
 
 // Ensure we do not overrun the predefined types we reserved
 // in the enum PredefinedTypeIDs above.

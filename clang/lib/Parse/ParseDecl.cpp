@@ -1085,6 +1085,33 @@ void Parser::ParseCUDAFunctionAttributes(ParsedAttributes &attrs) {
   }
 }
 
+bool Parser::TrySkipCCEScopeAnnotation() {
+  if (!getLangOpts().CceExt || Tok.isNot(tok::l_square))
+    return false;
+  auto IsScope = [](const Token &T) {
+    if (T.isNot(tok::identifier))
+      return false;
+    StringRef Name = T.getIdentifierInfo()->getName();
+    return Name == "aicore" || Name == "aicpu" || Name == "host";
+  };
+  unsigned N = 1;
+  if (!IsScope(GetLookAheadToken(N)))
+    return false;
+  ++N;
+  while (GetLookAheadToken(N).is(tok::comma)) {
+    if (!IsScope(GetLookAheadToken(++N)))
+      return false;
+    ++N;
+  }
+  if (GetLookAheadToken(N).isNot(tok::r_square))
+    return false;
+  ConsumeBracket();
+  while (Tok.isNot(tok::r_square))
+    ConsumeToken();
+  ConsumeBracket();
+  return true;
+}
+
 void Parser::ParseOpenCLQualifiers(ParsedAttributes &Attrs) {
   IdentifierInfo *AttrName = Tok.getIdentifierInfo();
   SourceLocation AttrNameLoc = Tok.getLocation();
@@ -3512,6 +3539,10 @@ void Parser::ParseDeclarationSpecifiers(
       }
       [[fallthrough]];
     case tok::l_square:
+      // Try to skip Ascend CCE scope annotations like [aicore], [aicpu],
+      // [aicore, host] before checking for C++11 attributes.
+      if (TrySkipCCEScopeAnnotation())
+        continue;
       if (!isAllowedCXX11AttributeSpecifier())
         goto DoneWithDeclSpec;
 
@@ -4366,6 +4397,38 @@ void Parser::ParseDeclarationSpecifiers(
       break;
     case tok::kw___bf16:
       isInvalid = DS.SetTypeSpecType(DeclSpec::TST_BFloat16, Loc, PrevSpec,
+                                     DiagID, Policy);
+      break;
+    case tok::kw___hif8:
+      isInvalid = DS.SetTypeSpecType(DeclSpec::TST_CceHif8, Loc, PrevSpec,
+                                     DiagID, Policy);
+      break;
+    case tok::kw___hif4x2:
+      isInvalid = DS.SetTypeSpecType(DeclSpec::TST_CceHif4x2, Loc, PrevSpec,
+                                     DiagID, Policy);
+      break;
+    case tok::kw___fp8e4m3:
+      isInvalid = DS.SetTypeSpecType(DeclSpec::TST_CceFp8E4M3, Loc, PrevSpec,
+                                     DiagID, Policy);
+      break;
+    case tok::kw___fp8e5m2:
+      isInvalid = DS.SetTypeSpecType(DeclSpec::TST_CceFp8E5M2, Loc, PrevSpec,
+                                     DiagID, Policy);
+      break;
+    case tok::kw___fp8e6m2:
+      isInvalid = DS.SetTypeSpecType(DeclSpec::TST_CceFp8E6M2, Loc, PrevSpec,
+                                     DiagID, Policy);
+      break;
+    case tok::kw___fp8e8m0:
+      isInvalid = DS.SetTypeSpecType(DeclSpec::TST_CceFp8E8M0, Loc, PrevSpec,
+                                     DiagID, Policy);
+      break;
+    case tok::kw___fp4e2m1x2:
+      isInvalid = DS.SetTypeSpecType(DeclSpec::TST_CceFp4E2M1x2, Loc, PrevSpec,
+                                     DiagID, Policy);
+      break;
+    case tok::kw___fp4e1m2x2:
+      isInvalid = DS.SetTypeSpecType(DeclSpec::TST_CceFp4E1M2x2, Loc, PrevSpec,
                                      DiagID, Policy);
       break;
     case tok::kw_float:
@@ -5640,6 +5703,14 @@ bool Parser::isKnownToBeTypeSpecifier(const Token &Tok) const {
   case tok::kw__ExtInt:
   case tok::kw__BitInt:
   case tok::kw___bf16:
+  case tok::kw___hif8:
+  case tok::kw___hif4x2:
+  case tok::kw___fp8e4m3:
+  case tok::kw___fp8e5m2:
+  case tok::kw___fp8e6m2:
+  case tok::kw___fp8e8m0:
+  case tok::kw___fp4e2m1x2:
+  case tok::kw___fp4e1m2x2:
   case tok::kw_half:
   case tok::kw_float:
   case tok::kw_double:
@@ -5733,6 +5804,14 @@ bool Parser::isTypeSpecifierQualifier(const Token &Tok) {
   case tok::kw__BitInt:
   case tok::kw_half:
   case tok::kw___bf16:
+  case tok::kw___hif8:
+  case tok::kw___hif4x2:
+  case tok::kw___fp8e4m3:
+  case tok::kw___fp8e5m2:
+  case tok::kw___fp8e6m2:
+  case tok::kw___fp8e8m0:
+  case tok::kw___fp4e2m1x2:
+  case tok::kw___fp4e1m2x2:
   case tok::kw_float:
   case tok::kw_double:
   case tok::kw__Accum:
@@ -5956,6 +6035,14 @@ bool Parser::isDeclarationSpecifier(
   case tok::kw__BitInt:
   case tok::kw_half:
   case tok::kw___bf16:
+  case tok::kw___hif8:
+  case tok::kw___hif4x2:
+  case tok::kw___fp8e4m3:
+  case tok::kw___fp8e5m2:
+  case tok::kw___fp8e6m2:
+  case tok::kw___fp8e8m0:
+  case tok::kw___fp4e2m1x2:
+  case tok::kw___fp4e1m2x2:
   case tok::kw_float:
   case tok::kw_double:
   case tok::kw__Accum:

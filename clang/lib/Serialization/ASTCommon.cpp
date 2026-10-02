@@ -296,6 +296,30 @@ serialization::TypeIdxFromBuiltin(const BuiltinType *BT) {
   case BuiltinType::BFloat16:
     ID = PREDEF_TYPE_BFLOAT16_ID;
     break;
+  case BuiltinType::CceHif8:
+    ID = PREDEF_TYPE_CCE_HIF8_ID;
+    break;
+  case BuiltinType::CceHif4x2:
+    ID = PREDEF_TYPE_CCE_HIF4X2_ID;
+    break;
+  case BuiltinType::CceFp8E4M3:
+    ID = PREDEF_TYPE_CCE_FP8E4M3_ID;
+    break;
+  case BuiltinType::CceFp8E5M2:
+    ID = PREDEF_TYPE_CCE_FP8E5M2_ID;
+    break;
+  case BuiltinType::CceFp8E6M2:
+    ID = PREDEF_TYPE_CCE_FP8E6M2_ID;
+    break;
+  case BuiltinType::CceFp8E8M0:
+    ID = PREDEF_TYPE_CCE_FP8E8M0_ID;
+    break;
+  case BuiltinType::CceFp4E2M1x2:
+    ID = PREDEF_TYPE_CCE_FP4E2M1X2_ID;
+    break;
+  case BuiltinType::CceFp4E1M2x2:
+    ID = PREDEF_TYPE_CCE_FP4E1M2X2_ID;
+    break;
   }
 
   return TypeIdx(0, ID);

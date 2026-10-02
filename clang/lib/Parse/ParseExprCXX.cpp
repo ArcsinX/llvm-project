@@ -2168,6 +2168,32 @@ void Parser::ParseCXXSimpleTypeSpecifier(DeclSpec &DS) {
   case tok::kw___bf16:
     DS.SetTypeSpecType(DeclSpec::TST_BFloat16, Loc, PrevSpec, DiagID, Policy);
     break;
+  case tok::kw___hif8:
+    DS.SetTypeSpecType(DeclSpec::TST_CceHif8, Loc, PrevSpec, DiagID, Policy);
+    break;
+  case tok::kw___hif4x2:
+    DS.SetTypeSpecType(DeclSpec::TST_CceHif4x2, Loc, PrevSpec, DiagID, Policy);
+    break;
+  case tok::kw___fp8e4m3:
+    DS.SetTypeSpecType(DeclSpec::TST_CceFp8E4M3, Loc, PrevSpec, DiagID, Policy);
+    break;
+  case tok::kw___fp8e5m2:
+    DS.SetTypeSpecType(DeclSpec::TST_CceFp8E5M2, Loc, PrevSpec, DiagID, Policy);
+    break;
+  case tok::kw___fp8e6m2:
+    DS.SetTypeSpecType(DeclSpec::TST_CceFp8E6M2, Loc, PrevSpec, DiagID, Policy);
+    break;
+  case tok::kw___fp8e8m0:
+    DS.SetTypeSpecType(DeclSpec::TST_CceFp8E8M0, Loc, PrevSpec, DiagID, Policy);
+    break;
+  case tok::kw___fp4e2m1x2:
+    DS.SetTypeSpecType(DeclSpec::TST_CceFp4E2M1x2, Loc, PrevSpec, DiagID,
+                       Policy);
+    break;
+  case tok::kw___fp4e1m2x2:
+    DS.SetTypeSpecType(DeclSpec::TST_CceFp4E1M2x2, Loc, PrevSpec, DiagID,
+                       Policy);
+    break;
   case tok::kw_half:
     DS.SetTypeSpecType(DeclSpec::TST_half, Loc, PrevSpec, DiagID, Policy);
     break;

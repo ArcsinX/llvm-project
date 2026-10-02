@@ -278,6 +278,10 @@ LANGOPT(HIPStdParInterposeAlloc, 1, 0, NotCompatible, "Replace allocations / dea
 
 LANGOPT(OpenACC           , 1, 0, NotCompatible, "OpenACC Enabled")
 
+// Editor compatibility for Ascend C. Set by clangd, never by the driver.
+// This does not describe an executable target or enable code generation.
+LANGOPT(CceExt            , 1, 0, NotCompatible, "Ascend C editor extensions")
+
 LANGOPT(MSVCEnableStdcMacro , 1, 0, NotCompatible, "Define __STDC__ with '-fms-compatibility'")
 LANGOPT(SizedDeallocation , 1, 0, NotCompatible, "sized deallocation")
 LANGOPT(AlignedAllocation , 1, 0, NotCompatible, "aligned allocation")

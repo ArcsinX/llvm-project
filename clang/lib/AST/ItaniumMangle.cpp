@@ -3462,6 +3462,30 @@ void CXXNameMangler::mangleType(const BuiltinType *T) {
     Out << TI->getBFloat16Mangling();
     break;
   }
+  case BuiltinType::CceHif8:
+    Out << "u6__hif8";
+    break;
+  case BuiltinType::CceHif4x2:
+    Out << "u8__hif4x2";
+    break;
+  case BuiltinType::CceFp8E4M3:
+    Out << "u9__fp8e4m3";
+    break;
+  case BuiltinType::CceFp8E5M2:
+    Out << "u9__fp8e5m2";
+    break;
+  case BuiltinType::CceFp8E6M2:
+    Out << "u9__fp8e6m2";
+    break;
+  case BuiltinType::CceFp8E8M0:
+    Out << "u9__fp8e8m0";
+    break;
+  case BuiltinType::CceFp4E2M1x2:
+    Out << "u11__fp4e2m1x2";
+    break;
+  case BuiltinType::CceFp4E1M2x2:
+    Out << "u11__fp4e1m2x2";
+    break;
   case BuiltinType::Ibm128: {
     const TargetInfo *TI = &getASTContext().getTargetInfo();
     Out << TI->getIbm128Mangling();

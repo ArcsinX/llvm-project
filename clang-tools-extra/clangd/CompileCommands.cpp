@@ -7,6 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "CompileCommands.h"
+#include "AscendC.h"
 #include "Config.h"
 #include "support/Logger.h"
 #include "support/Trace.h"
@@ -318,6 +319,17 @@ void CommandMangler::operator()(tooling::CompileCommand &Command,
   Cmd.push_back("--");
   Cmd.push_back(File.str());
 
+  llvm::StringRef InferredFrom = Command.Heuristic;
+  InferredFrom.consume_front("inferred from ");
+  if (isAscendCFile(File) ||
+      (TransferFrom && isAscendCFile(*TransferFrom)) ||
+      isAscendCFile(InferredFrom)) {
+    auto Pos = llvm::find(Cmd, "--");
+    // Set the language before transferCompileCommand() and keep the marker
+    // when a header borrows the command of an Ascend translation unit.
+    Cmd.insert(Pos, {"-xc++", "-D__CLANGD_ASCENDC__=1"});
+  }
+
   if (TransferFrom) {
     tooling::CompileCommand TransferCmd;
     TransferCmd.Filename = std::move(*TransferFrom);
@@ -328,6 +340,7 @@ void CommandMangler::operator()(tooling::CompileCommand &Command,
            Cmd[Cmd.size() - 2] == "--" &&
            "TransferCommand should produce a command ending in -- filename");
   }
+
 
   for (auto &Edit : Config::current().CompileFlags.Edits)
     Edit(Cmd);

@@ -2529,6 +2529,28 @@ static bool IsStandardConversion(Sema &S, Expr* From, QualType ToType,
     // T" (C++ 4.2p1).
     FromType = S.Context.getArrayDecayedType(FromType);
 
+    // CCE extension: allow string literals to implicitly convert to pointers
+    // in any target address space.  The bisheng CCE compiler permits this so
+    // that string literals can be passed to functions expecting __gm__
+    // pointers.
+    if (S.getLangOpts().CceExt &&
+        isa<StringLiteral>(From->IgnoreParenImpCasts())) {
+      if (const auto *ToPtrType = ToType->getAs<PointerType>()) {
+        Qualifiers ToPointeeQuals = ToPtrType->getPointeeType().getQualifiers();
+        if (ToPointeeQuals.hasAddressSpace() &&
+            isTargetAddressSpace(ToPointeeQuals.getAddressSpace())) {
+          // Re-qualify the decayed pointer's pointee with the target AS.
+          QualType FromPointee =
+              FromType->getAs<PointerType>()->getPointeeType();
+          Qualifiers FromPointeeQuals = FromPointee.getQualifiers();
+          FromPointeeQuals.setAddressSpace(ToPointeeQuals.getAddressSpace());
+          QualType NewPointee = S.Context.getQualifiedType(
+              FromPointee.getUnqualifiedType(), FromPointeeQuals);
+          FromType = S.Context.getPointerType(NewPointee);
+        }
+      }
+    }
+
     if (S.IsStringLiteralToNonConstPointerConversion(From, ToType)) {
       // This conversion is deprecated in C++03 (D.4)
       SCS.DeprecatedStringLiteralToCharPtr = true;

@@ -69,6 +69,14 @@ namespace clang {
     TST_Accum,   // ISO/IEC JTC1 SC22 WG14 N1169 Extension
     TST_Fract,
     TST_BFloat16,
+    TST_CceHif8,      // Ascend CCE __hif8
+    TST_CceHif4x2,    // Ascend CCE __hif4x2
+    TST_CceFp8E4M3,   // Ascend CCE __fp8e4m3
+    TST_CceFp8E5M2,   // Ascend CCE __fp8e5m2
+    TST_CceFp8E6M2,   // Ascend CCE __fp8e6m2
+    TST_CceFp8E8M0,   // Ascend CCE __fp8e8m0
+    TST_CceFp4E2M1x2, // Ascend CCE __fp4e2m1x2
+    TST_CceFp4E1M2x2, // Ascend CCE __fp4e1m2x2
     TST_float,
     TST_double,
     TST_float128,

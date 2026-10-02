@@ -1391,6 +1391,8 @@ public:
       SatUnsignedLongFractTy;
   CanQualType HalfTy; // [OpenCL 6.1.1.1], ARM NEON
   CanQualType BFloat16Ty;
+  CanQualType CceHif8Ty, CceHif4x2Ty, CceFp8E4M3Ty, CceFp8E5M2Ty, CceFp8E6M2Ty;
+  CanQualType CceFp8E8M0Ty, CceFp4E2M1x2Ty, CceFp4E1M2x2Ty;
   CanQualType Float16Ty; // C11 extension ISO/IEC TS 18661-3
   CanQualType VoidPtrTy, NullPtrTy;
   CanQualType DependentTy, OverloadTy, BoundMemberTy, UnresolvedTemplateTy,

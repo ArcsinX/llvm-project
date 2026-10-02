@@ -1903,6 +1903,13 @@ static void AddTypeSpecifierResults(const LangOptions &LangOpts,
   Results.AddResult(Result("const", CCP_Type));
   Results.AddResult(Result("volatile", CCP_Type));
 
+  if (LangOpts.CceExt) {
+    for (const char *Type :
+         {"__cce_half", "__hif8", "__hif4x2", "__fp8e4m3", "__fp8e5m2",
+          "__fp8e6m2", "__fp8e8m0", "__fp4e2m1x2", "__fp4e1m2x2"})
+      Results.AddResult(Result(Type, CCP_Type));
+  }
+
   if (LangOpts.C99) {
     // C99-specific
     Results.AddResult(Result("_Complex", CCP_Type));

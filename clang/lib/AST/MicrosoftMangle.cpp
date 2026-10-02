@@ -2839,6 +2839,31 @@ void MicrosoftCXXNameMangler::mangleType(const BuiltinType *T, Qualifiers,
     mangleArtificialTagType(TagTypeKind::Struct, "__bf16", {"__clang"});
     break;
 
+  case BuiltinType::CceHif8:
+    mangleArtificialTagType(TagTypeKind::Struct, "__hif8", {"__cce"});
+    break;
+  case BuiltinType::CceHif4x2:
+    mangleArtificialTagType(TagTypeKind::Struct, "__hif4x2", {"__cce"});
+    break;
+  case BuiltinType::CceFp8E4M3:
+    mangleArtificialTagType(TagTypeKind::Struct, "__fp8e4m3", {"__cce"});
+    break;
+  case BuiltinType::CceFp8E5M2:
+    mangleArtificialTagType(TagTypeKind::Struct, "__fp8e5m2", {"__cce"});
+    break;
+  case BuiltinType::CceFp8E6M2:
+    mangleArtificialTagType(TagTypeKind::Struct, "__fp8e6m2", {"__cce"});
+    break;
+  case BuiltinType::CceFp8E8M0:
+    mangleArtificialTagType(TagTypeKind::Struct, "__fp8e8m0", {"__cce"});
+    break;
+  case BuiltinType::CceFp4E2M1x2:
+    mangleArtificialTagType(TagTypeKind::Struct, "__fp4e2m1x2", {"__cce"});
+    break;
+  case BuiltinType::CceFp4E1M2x2:
+    mangleArtificialTagType(TagTypeKind::Struct, "__fp4e1m2x2", {"__cce"});
+    break;
+
   case BuiltinType::MFloat8:
     mangleArtificialTagType(TagTypeKind::Struct, "__mfp8", {"__clang"});
     break;

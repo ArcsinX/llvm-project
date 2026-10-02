@@ -1,0 +1,4 @@
+  {"cce_stubs.h", {@cce_stubs_h@}},
+  {"cce_builtin_stubs.h", {@cce_builtin_stubs_h@}},
+  {"cce_intrinsic_stubs.h", {@cce_intrinsic_stubs_h@}},
+  {"cce_simt_stubs.h", {@cce_simt_stubs_h@}},

@@ -3048,6 +3048,10 @@ private:
   /// locations where attributes are not allowed.
   void DiagnoseAndSkipCXX11Attributes();
 
+  /// Try to skip Ascend CCE scope annotations like [aicore], [aicore, host],
+  /// [aicpu]. Returns true if a CCE annotation was consumed, false otherwise.
+  bool TrySkipCCEScopeAnnotation();
+
   void ParseOpenMPAttributeArgs(const IdentifierInfo *AttrName,
                                 CachedTokens &OpenMPTokens);
 
