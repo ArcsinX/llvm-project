@@ -345,24 +345,8 @@ forced-include configuration. Examples requiring CANN use the SDK include paths
 and processor definitions described under **Configuration**; examples marked
 standalone require no SDK with our implementation.
 
-**What the IDE shows:** an error below means a clangd error diagnostic in the
-editor's Problems list and usually a red underline. Warning colors and underline
-locations depend on the editor. "No error" means no error caused by the shown
-Ascend construct; project warning flags can still produce unrelated warnings.
-
-| Example | DeepSeek: expected IDE result | Ours: intended IDE result | Navigation, hover and completion impact |
-| --- | --- | --- | --- |
-| 1. Host-to-GM launch | **Error** on the launch: incompatible pointer argument/address space | **No launch error**; invalid const/type conversions still show errors | This is primarily a false diagnostic fix. DeepSeek can still navigate to the declared kernel; we do not claim its navigation always fails. |
-| 2. Numeric UB bytes | **Error** on the `1024` configuration argument: integer cannot initialize the SDK's pointer parameter | **No configuration error** on 3510; still an error on 2201 with the real SDK | Kernel declaration lookup itself is not the issue. We type-check the launch against a matching configuration overload. |
-| 3. Project profile 2201 | **Error** at the explicit `#error`; macro-redefinition **warnings** may also appear | **No profile-guard error**; project definitions are preserved | DeepSeek analyzes the SDK's 3510 conditional branches instead of the requested 2201 branches. Completion and navigation can therefore reflect the wrong profile. |
-| 4. Qualified `dcci` | **Error** on `__cce_scalar::dcci`: no such member in that namespace | **No missing-member error**; the qualified name resolves to our compatibility declaration | DeepSeek cannot resolve this qualified use for declaration navigation or a function-signature hover. Ours can resolve it; this does not provide navigation to a hardware implementation. |
-| 5. E4M3 maximum 448 | **Error** at `static_assert`: the comparison is false | **No assertion error**; the value remains 448 | Constant evaluation is the difference. Ordinary navigation to `maximum` is not the problem in either implementation. |
-| 6. No CANN installation | **Error** for a missing SDK header in the forced shim; further errors may follow | **No missing-SDK-header error** for this standalone kernel | Missing headers can leave declarations unavailable and degrade editor features. Our fallback supplies the basic kernel declarations; full SDK API completion still requires CANN. |
-
-The navigation/completion consequences above follow from name resolution and
-preprocessing; they are not measurements of DeepSeek's LSP responses. A false
-diagnostic does not by itself establish that navigation, hover or completion is
-broken throughout the file.
+The comments mark the affected lines and describe the error shown in the IDE.
+These errors normally appear as red underlines and entries in the Problems list.
 
 ##### 1. Ordinary host pointers passed to GM kernel parameters
 
@@ -376,6 +360,8 @@ __global__ __aicore__ void add_custom(__gm__ unsigned char *x,
 
 void add_custom_do(unsigned blocks, void *descriptor, void *stream,
                    unsigned char *x, unsigned char *y, unsigned char *z) {
+  // DeepSeek: error here: ordinary pointers cannot initialize __gm__ parameters.
+  // Ours: no error; host pointers are accepted as kernel arguments.
   add_custom<<<blocks, descriptor, stream>>>(x, y, z);
 }
 ```
@@ -396,14 +382,17 @@ void add_custom_do(unsigned blocks, void *descriptor, void *stream,
 __global__ void write_value(__gm__ int *p) {}
 
 void invalid(const int *read_only, float *wrong_type, int *ordinary) {
-  write_value<<<1, nullptr, nullptr>>>(read_only);  // Would discard const.
-  write_value<<<1, nullptr, nullptr>>>(wrong_type); // Wrong pointee type.
-  __gm__ int *q = ordinary;                       // Not a kernel launch.
+  // Ours: error here too; converting this pointer would discard const.
+  write_value<<<1, nullptr, nullptr>>>(read_only);
+  // Ours: error here too; float* cannot initialize an int* parameter.
+  write_value<<<1, nullptr, nullptr>>>(wrong_type);
+  // Ours: error here too; ordinary assignment cannot change address spaces.
+  __gm__ int *q = ordinary;
 }
 ```
 
 DeepSeek's `__CCE_STUB_DISABLE_ADDRESS_SPACE_QUALIFIERS__` switch can hide the
-original launch error, but it also erases the distinction that should reject the
+error on the valid call, but it also erases the distinction that should reject the
 last assignment. Our fix preserves that distinction.
 
 ##### 2. Numeric dynamic UB bytes with the real 3510 SDK
@@ -414,7 +403,10 @@ last assignment. Our fix preserves that distinction.
 __global__ __aicore__ void kernel(__gm__ int *p) {}
 
 void launch(__gm__ int *p, void *stream) {
+  // DeepSeek: error here: 1024 cannot initialize the SDK's void* parameter.
+  // Ours: no error with profile 3510; 1024 is a dynamic UB byte count.
   kernel<<<1, 1024, stream>>>(p);
+  // Both: no error here; literal zero also works as a null pointer constant.
   kernel<<<1, 0, stream>>>(p);
 }
 ```
@@ -442,6 +434,8 @@ void launch(__gm__ int *p, void *stream) {
 #include "kernel_operator.h"
 
 #if __NPU_ARCH__ != 2201
+// DeepSeek: error here: its shim replaced the project's 2201 definition with 3510.
+// Ours: no error; __NPU_ARCH__ stays 2201, so this #error is skipped.
 #error The editor changed the selected processor profile
 #endif
 
@@ -472,6 +466,9 @@ __aicore__ void bind_buffer(__gm__ half *p) {
 #include "kernel_operator.h"
 
 __aicore__ void flush(__gm__ unsigned char *p) {
+  // DeepSeek: error here: no member named dcci in namespace __cce_scalar.
+  // Ours: no error; dcci resolves to a compatibility declaration.
+  // Ours: Go to Declaration and signature hover can use that declaration.
   __cce_scalar::dcci(p, 1, 1);
 }
 ```
@@ -499,6 +496,8 @@ Standalone `e4m3.asc`:
 
 ```cpp
 constexpr __fp8e4m3 maximum = 448.0f;
+// DeepSeek: error here: static assertion failed; its FP8 format cannot hold 448.
+// Ours: no error; maximum retains the value 448 and the assertion passes.
 static_assert(static_cast<float>(maximum) == 448.0f);
 ```
 
@@ -517,6 +516,9 @@ static_assert(static_cast<float>(maximum) == 448.0f);
 Standalone `no-sdk.asc`:
 
 ```cpp
+// DeepSeek: error in its forced shim before this code is parsed:
+// cce_aicore_intrinsics.h not found (no CANN SDK installed).
+// Ours: no error for this source; the embedded fallback requires no CANN SDK.
 __global__ __aicore__ void kernel(__gm__ int *p) {}
 
 void launch(__gm__ int *p) {
@@ -529,7 +531,7 @@ void launch(__gm__ int *p) {
   IDE is expected to show a **header-not-found error from the forced shim**.
   Further errors and incomplete editor features can follow from missing
   declarations; the editor may report the header error against the main file.
-- **Ours:** shows **no missing-header or launch error for this source**. Its
+- **Ours:** shows **no error for this source**. Its
   fallback supplies the basic types and configuration declarations needed to
   parse the kernel and resolve the launch to `kernel`.
 - **Boundary:** `#include "kernel_operator.h"`, `AscendC::GlobalTensor`, `TPipe`
