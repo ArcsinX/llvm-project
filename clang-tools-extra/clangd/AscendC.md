@@ -329,6 +329,182 @@ reproduction before our launch fix; its exact pinned LLVM build was not built
 and tested side by side. Both implementations retain erased execution qualifiers
 and no-op intrinsics, so neither is a complete Ascend compiler or language checker.
 
+#### Minimal examples of differences
+
+These examples compare the reference revision above, with its shipped shim and
+distinct address spaces enabled, against this implementation. DeepSeek outcomes
+are **expected from source inspection**, not measurements from running its
+pinned build. The examples reduce the documented host launch, SDK patterns and
+existing validation cases; the exact snippets below were not rerun for this
+documentation update. Diagnostic descriptions give the cause, not guaranteed
+verbatim wording.
+
+Save Ascend examples as `.asc` files. Our clangd enables editor mode and supplies
+its compatibility header automatically. For DeepSeek, use its installation and
+forced-include configuration. Examples requiring CANN use the SDK include paths
+and processor definitions described under **Configuration**; examples marked
+standalone require no SDK with our implementation.
+
+##### 1. Ordinary host pointers passed to GM kernel parameters
+
+Standalone `host-launch.asc`, reduced from Huawei's
+[kernel-function example](https://www.hiascend.com/doc_center/source/en/CANNCommunityEdition/900/programug/Ascendcopdevg/atlas_ascendc_10_0014.html):
+
+```cpp
+__global__ __aicore__ void add_custom(__gm__ unsigned char *x,
+                                    __gm__ unsigned char *y,
+                                    __gm__ unsigned char *z) {}
+
+void add_custom_do(unsigned blocks, void *descriptor, void *stream,
+                   unsigned char *x, unsigned char *y, unsigned char *z) {
+  add_custom<<<blocks, descriptor, stream>>>(x, y, z);
+}
+```
+
+- **DeepSeek:** the launch arguments have ordinary pointer types, while the
+  parameters have address-space-1 pointees. Its patches provide no conversion
+  between these types at launches, so the call is expected to be rejected.
+- **Ours:** accepts the launch through a launch-specific host-to-GM conversion.
+  This pattern, including the full SDK `KernelAdd` implementation, was checked
+  against BiSheng for both 2201 and 3510.
+- **Boundary:** pointee types and const qualification remain checked. The
+  following separate negative example must still produce diagnostics:
+
+```cpp
+__global__ void write_value(__gm__ int *p) {}
+
+void invalid(const int *read_only, float *wrong_type, int *ordinary) {
+  write_value<<<1, nullptr, nullptr>>>(read_only);  // Would discard const.
+  write_value<<<1, nullptr, nullptr>>>(wrong_type); // Wrong pointee type.
+  __gm__ int *q = ordinary;                       // Not a kernel launch.
+}
+```
+
+DeepSeek's `__CCE_STUB_DISABLE_ADDRESS_SPACE_QUALIFIERS__` switch can hide the
+original launch error, but it also erases the distinction that should reject the
+last assignment. Our fix preserves that distinction.
+
+##### 2. Numeric dynamic UB bytes with the real 3510 SDK
+
+`numeric-launch.asc`, with CANN 9.0.0 compiler headers and the **3510** profile:
+
+```cpp
+__global__ __aicore__ void kernel(__gm__ int *p) {}
+
+void launch(__gm__ int *p, void *stream) {
+  kernel<<<1, 1024, stream>>>(p);
+  kernel<<<1, 0, stream>>>(p);
+}
+```
+
+- **DeepSeek:** CANN 9.0.0's runtime wrapper declares the second configuration
+  argument as `void *smDesc`. Its shim adds no numeric overload, so `1024` is
+  expected to be rejected as an integer passed to a pointer parameter. Literal
+  zero can already work as a null pointer constant.
+- **Ours:** supplies a constrained numeric overload for profile 3510 and resolves
+  the configuration overload set. Both lines are accepted, without making zero
+  ambiguous. The numeric form was also validated in a real SDK kernel against
+  BiSheng.
+- **Boundary:** with the real SDK and profile **2201**, `1024` remains invalid,
+  matching the checked compiler. Use a descriptor pointer there. Without an
+  SDK, our fallback accepts both launch forms and does not establish which form
+  a particular processor supports.
+
+##### 3. Keeping the project's 2201 processor profile
+
+`profile-2201.asc`, with CANN 9.0.0 headers and the **2201** definitions from
+**Configuration**:
+
+```cpp
+#include "kernel_operator.h"
+
+#if __NPU_ARCH__ != 2201
+#error The editor changed the selected processor profile
+#endif
+
+__aicore__ void bind_buffer(__gm__ half *p) {
+  AscendC::GlobalTensor<half> tensor;
+  tensor.SetGlobalBuffer(p, 16);
+}
+```
+
+- **DeepSeek:** its forced shim unconditionally defines `__NPU_ARCH__` as 3510
+  and `__CCE_AICORE__` as 310. It overwrites the requested profile, so the explicit
+  guard fails and SDK conditionals select the wrong architecture.
+- **Ours:** retains the project's 2201/220 definitions. It also avoids imposing
+  the newer scalar intrinsic catalogue or a SIMT `cce::dim3` alias on this
+  profile. Real `GlobalTensor` and pipeline kernels were checked with this SDK
+  profile.
+- **Boundary:** the project must supply the correct processor definitions. We
+  do not infer the NPU from the host architecture or validate every processor.
+
+##### 4. Qualified scalar `dcci` used by SDK debug headers
+
+`scalar-dcci.asc`, with CANN 9.0.0 headers and the **3510** profile:
+
+```cpp
+#include "kernel_operator.h"
+
+__aicore__ void flush(__gm__ unsigned char *p) {
+  __cce_scalar::dcci(p, 1, 1);
+}
+```
+
+This qualified call occurs in the SDK's
+`asc/impl/utils/debug/asc_printf_simt_impl.h`.
+
+- **DeepSeek:** its typed catalogue suppresses the SDK's original intrinsic
+  declarations and declares `dcci` globally. It does not expose that declaration
+  in `__cce_scalar`, so qualified lookup is expected to fail. A
+  `using namespace __cce_scalar` directive does not import global names into
+  that namespace.
+- **Ours:** exposes the catalogue overloads with
+  `namespace __cce_scalar { using ::dcci; }`, allowing the SDK's qualified calls.
+- **Boundary:** this supplies declarations for editor lookup and diagnostics;
+  it does not implement cache operations or validate their hardware behavior.
+
+##### 5. The finite E4M3 maximum, 448
+
+Standalone `e4m3.asc`:
+
+```cpp
+constexpr __fp8e4m3 maximum = 448.0f;
+static_assert(static_cast<float>(maximum) == 448.0f);
+```
+
+- **DeepSeek:** maps `__fp8e4m3` to `APFloat::Float8E4M3()`, whose largest finite
+  value is 240. The conversion cannot preserve 448, so the assertion is expected
+  to fail.
+- **Ours:** uses `APFloat::Float8E4M3FN()`, matching the documented finite maximum
+  of 448. This assertion is covered by `AscendC.SmallFloatTypes`.
+- **Boundary:** this fixes E4M3 constant representation. It does not make every
+  small floating format or packed FP4 operation exact.
+
+##### 6. Editing a minimal kernel without installing CANN
+
+Standalone `no-sdk.asc`:
+
+```cpp
+__global__ __aicore__ void kernel(__gm__ int *p) {}
+
+void launch(__gm__ int *p) {
+  kernel<<<1, nullptr, nullptr>>>(p);
+}
+```
+
+- **DeepSeek:** its main shim requires SDK headers, including
+  `cce_aicore_intrinsics.h` and `__clang_cce_runtime_wrapper.h`; without CANN the
+  includes fail before the kernel can be checked.
+- **Ours:** supplies fallback declarations for the qualifiers and launch
+  configuration, allowing this standalone source to be parsed.
+- **Boundary:** `#include "kernel_operator.h"`, `AscendC::GlobalTensor`, `TPipe`
+  and other SDK APIs still require real CANN headers. The fallback is not an SDK.
+
+For the reference code behind these differences, see its pinned
+[shim](https://github.com/deepseek-ai/clangd-ascend/blob/f407eca30e07e647ce2e556f9b08e145b65362c7/include/cce_stubs/cce_stubs.h),
+[typed intrinsic catalogue](https://github.com/deepseek-ai/clangd-ascend/blob/f407eca30e07e647ce2e556f9b08e145b65362c7/include/cce_stubs/cce_intrinsic_stubs.h),
+and [frontend patch](https://github.com/deepseek-ai/clangd-ascend/blob/f407eca30e07e647ce2e556f9b08e145b65362c7/patches/0001-clang-add-Ascend-CCE-language-extensions-for-clangd.patch).
+
 #### Comparison summary
 
 The DeepSeek column describes the inspected reference revision above. Expected
